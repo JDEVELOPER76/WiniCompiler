@@ -1,0 +1,233 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Wini",
+  "scopeName": "source.wini",
+  "patterns": [
+    { "include": "#comentario-doc" },
+    { "include": "#comentario" },
+    { "include": "#cadena-interpolada-triple" },
+    { "include": "#cadena-triple" },
+    { "include": "#cadena-interpolada-doble" },
+    { "include": "#cadena-interpolada-simple" },
+    { "include": "#cadena-doble" },
+    { "include": "#cadena-simple" },
+    { "include": "#importar" },
+    { "include": "#declaracion-funcion" },
+    { "include": "#declaracion-estructura" },
+    { "include": "#palabras-control" },
+    { "include": "#palabras-declaracion" },
+    { "include": "#palabras-otras" },
+    { "include": "#integradas-sentencia" },
+    { "include": "#conversiones" },
+    { "include": "#integradas-llamada" },
+    { "include": "#operadores-logicos" },
+    { "include": "#tipos" },
+    { "include": "#constantes" },
+    { "include": "#numeros" },
+    { "include": "#comparadores" },
+    { "include": "#flecha" },
+    { "include": "#asignacion" },
+    { "include": "#aritmetica" },
+    { "include": "#brackets" },
+    { "include": "#separadores" },
+    { "include": "#accesor" },
+    { "include": "#llamadas" },
+    { "include": "#variables" }
+  ],
+  "repository": {
+    "comentario-doc": {
+      "comment": "Comentario de documentación #@ (el parser lo toma como docstring de la función)",
+      "match": "#@.*$",
+      "name": "comment.line.doc.wini"
+    },
+    "comentario": {
+      "comment": "Comentario de línea con #",
+      "match": "#.*$",
+      "name": "comment.line.number-sign.wini"
+    },
+    "cadena-interpolada-triple": {
+      "comment": "Cadena interpolada triple c\"\"\"...\"\"\" (con {expresiones})",
+      "begin": "c\\\"\\\"\\\"",
+      "end": "\\\"\\\"\\\"",
+      "name": "string.quoted.triple.interpolated.wini",
+      "patterns": [ { "include": "#interpolacion" } ]
+    },
+    "cadena-triple": {
+      "comment": "Cadena de texto triple \"\"\"...\"\"\" o '''...'''",
+      "begin": "\\\"\\\"\\\"",
+      "end": "\\\"\\\"\\\"",
+      "name": "string.quoted.triple.wini"
+    },
+    "cadena-interpolada-doble": {
+      "comment": "Cadena interpolada c\"...\" (con {expresiones})",
+      "begin": "c\\\"",
+      "end": "\\\"",
+      "name": "string.quoted.double.interpolated.wini",
+      "patterns": [ { "include": "#interpolacion" } ]
+    },
+    "cadena-interpolada-simple": {
+      "comment": "Cadena interpolada c'...' (con {expresiones})",
+      "begin": "c'",
+      "end": "'",
+      "name": "string.quoted.single.interpolated.wini",
+      "patterns": [ { "include": "#interpolacion" } ]
+    },
+    "cadena-doble": {
+      "comment": "Cadena de texto \"...\" (sin secuencias de escape, igual que el lexer)",
+      "begin": "\\\"",
+      "end": "\\\"",
+      "name": "string.quoted.double.wini"
+    },
+    "cadena-simple": {
+      "comment": "Cadena de texto '...'",
+      "begin": "'",
+      "end": "'",
+      "name": "string.quoted.single.wini"
+    },
+    "interpolacion": {
+      "comment": "Expresiones {..} dentro de cadenas c\"...\"",
+      "patterns": [
+        {
+          "begin": "\\{",
+          "end": "\\}",
+          "name": "meta.interpolation.wini",
+          "beginCaptures": { "0": { "name": "punctuation.definition.interpolation.begin.wini" } },
+          "endCaptures": { "0": { "name": "punctuation.definition.interpolation.end.wini" } },
+          "patterns": [
+            { "include": "#comparadores" },
+            { "include": "#flecha" },
+            { "include": "#asignacion" },
+            { "include": "#aritmetica" },
+            { "include": "#operadores-logicos" },
+            { "include": "#numeros" },
+            { "include": "#constantes" },
+            { "include": "#conversiones" },
+            { "include": "#integradas-llamada" },
+            { "include": "#tipos" },
+            { "include": "#llamadas" },
+            { "include": "#variables" }
+          ]
+        }
+      ]
+    },
+    "importar": {
+      "comment": "importar nombre | importar a.b.c | importar \"ruta\" como alias",
+      "name": "meta.import.wini",
+      "match": "^\\s*(importar)\\s+((?:\\\"[^\\\"]*\\\")|(?:'[^']*')|(?:[A-Za-z_][\\w.]*))?(\\s+como\\s+([A-Za-z_]\\w*))?",
+      "captures": {
+        "1": { "name": "keyword.declaration.wini" },
+        "2": {
+          "patterns": [
+            { "match": "\\\"[^\\\"]*\\\"|'[^']*'", "name": "string.quoted.wini" },
+            { "match": "[A-Za-z_][\\w.]*", "name": "entity.name.module.wini" }
+          ]
+        },
+        "3": { "name": "keyword.other.wini" },
+        "4": { "name": "variable.other.wini" }
+      }
+    },
+    "declaracion-funcion": {
+      "comment": "funcion nombre(...) / externa nombre(...)",
+      "match": "^\\s*(funcion|externa)\\s+([A-Za-z_]\\w*)",
+      "captures": {
+        "1": { "name": "keyword.declaration.wini" },
+        "2": { "name": "entity.name.function.wini" }
+      }
+    },
+    "declaracion-estructura": {
+      "comment": "estructura Nombre: ... campos ...",
+      "match": "^\\s*(estructura)\\s+([A-Za-z_]\\w*)",
+      "captures": {
+        "1": { "name": "keyword.declaration.wini" },
+        "2": { "name": "entity.name.class.wini" }
+      }
+    },
+    "palabras-control": {
+      "comment": "Palabras clave de control de flujo",
+      "match": "\\b(si|sino|demas|mientras|para|romper|continuar|retornar|intentar|capturar|finalmente|lanzar|relanzar)\\b",
+      "name": "keyword.control.wini"
+    },
+    "palabras-declaracion": {
+      "comment": "Palabras clave de declaración (red de seguridad fuera de línea)",
+      "match": "\\b(funcion|externa|estructura)\\b",
+      "name": "keyword.declaration.wini"
+    },
+    "palabras-otras": {
+      "comment": "Otras palabras clave",
+      "match": "\\b(como|tipo|importar)\\b",
+      "name": "keyword.other.wini"
+    },
+    "integradas-sentencia": {
+      "comment": "Sentencias integradas del lenguaje",
+      "match": "\\b(escribir|leer|liberar)\\b",
+      "name": "keyword.other.builtin.wini"
+    },
+    "conversiones": {
+      "comment": "Funciones de conversión integradas: entero(x), cadena(x), ... y alias en inglés",
+      "match": "\\b(entero|decimal|cadena|booleano|int|float|str|bool|dict|list)\\b(?=\\s*\\()",
+      "name": "support.function.conversion.wini"
+    },
+    "integradas-llamada": {
+      "comment": "Funciones integradas llamadas como función: claves, valores, rango",
+      "match": "\\b(claves|valores|rango)\\b(?=\\s*\\()",
+      "name": "support.function.builtin.wini"
+    },
+    "operadores-logicos": {
+      "match": "\\b(y|o|no|en)\\b",
+      "name": "keyword.operator.logical.wini"
+    },
+    "tipos": {
+      "comment": "Tipos de dato (español + alias en inglés) y vacio",
+      "match": "\\b(entero|decimal|cadena|booleano|diccionario|lista|int|float|str|bool|dict|list|vacio)\\b",
+      "name": "storage.type.wini"
+    },
+    "constantes": {
+      "match": "\\b(verdadero|falso|nulo)\\b",
+      "name": "constant.language.wini"
+    },
+    "numeros": {
+      "match": "\\b\\d+(?:\\.\\d+)?\\b",
+      "name": "constant.numeric.wini"
+    },
+    "comparadores": {
+      "match": "==|!=|<>|<=|>=|<|>",
+      "name": "keyword.operator.comparison.wini"
+    },
+    "flecha": {
+      "match": "->",
+      "name": "keyword.operator.arrow.wini"
+    },
+    "asignacion": {
+      "match": "\\+=|-=|=",
+      "name": "keyword.operator.assignment.wini"
+    },
+    "aritmetica": {
+      "match": "[+\\-*/%]",
+      "name": "keyword.operator.arithmetic.wini"
+    },
+    "brackets": {
+      "match": "[()\\[\\]{}]",
+      "name": "punctuation.definition.brackets.wini"
+    },
+    "separadores": {
+      "match": "[,:]",
+      "name": "punctuation.separator.wini"
+    },
+    "accesor": {
+      "match": "\\.",
+      "name": "punctuation.accessor.wini"
+    },
+    "llamadas": {
+      "comment": "Llamada a función: nombre( — incluye funciones del usuario",
+      "match": "\\b([A-Za-z_]\\w*)\\b(?=\\s*\\()",
+      "captures": {
+        "1": { "name": "entity.name.function.wini" }
+      }
+    },
+    "variables": {
+      "comment": "Todo identificador restante queda como variable (nunca sin color)",
+      "match": "[A-Za-z_]\\w*",
+      "name": "variable.other.wini"
+    }
+  }
+}

@@ -1,0 +1,233 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Cwin",
+  "scopeName": "source.cwin",
+  "patterns": [
+    { "include": "#comentario-doc" },
+    { "include": "#comentario" },
+    { "include": "#cadena-interpolada-triple" },
+    { "include": "#cadena-triple" },
+    { "include": "#cadena-interpolada-doble" },
+    { "include": "#cadena-interpolada-simple" },
+    { "include": "#cadena-doble" },
+    { "include": "#cadena-simple" },
+    { "include": "#importar" },
+    { "include": "#declaracion-funcion" },
+    { "include": "#declaracion-estructura" },
+    { "include": "#palabras-control" },
+    { "include": "#palabras-declaracion" },
+    { "include": "#palabras-otras" },
+    { "include": "#integradas-sentencia" },
+    { "include": "#conversiones" },
+    { "include": "#integradas-llamada" },
+    { "include": "#operadores-logicos" },
+    { "include": "#tipos" },
+    { "include": "#constantes" },
+    { "include": "#numeros" },
+    { "include": "#comparadores" },
+    { "include": "#flecha" },
+    { "include": "#asignacion" },
+    { "include": "#aritmetica" },
+    { "include": "#brackets" },
+    { "include": "#separadores" },
+    { "include": "#accesor" },
+    { "include": "#llamadas" },
+    { "include": "#variables" }
+  ],
+  "repository": {
+    "comentario-doc": {
+      "comment": "Comentario de documentación #@ (el parser lo toma como docstring de la función)",
+      "match": "#@.*$",
+      "name": "comment.line.doc.cwin"
+    },
+    "comentario": {
+      "comment": "Comentario de línea con #",
+      "match": "#.*$",
+      "name": "comment.line.number-sign.cwin"
+    },
+    "cadena-interpolada-triple": {
+      "comment": "Cadena interpolada triple c\"\"\"...\"\"\" (con {expresiones})",
+      "begin": "c\\\"\\\"\\\"",
+      "end": "\\\"\\\"\\\"",
+      "name": "string.quoted.triple.interpolated.cwin",
+      "patterns": [ { "include": "#interpolacion" } ]
+    },
+    "cadena-triple": {
+      "comment": "Cadena de texto triple \"\"\"...\"\"\" o '''...'''",
+      "begin": "\\\"\\\"\\\"",
+      "end": "\\\"\\\"\\\"",
+      "name": "string.quoted.triple.cwin"
+    },
+    "cadena-interpolada-doble": {
+      "comment": "Cadena interpolada c\"...\" (con {expresiones})",
+      "begin": "c\\\"",
+      "end": "\\\"",
+      "name": "string.quoted.double.interpolated.cwin",
+      "patterns": [ { "include": "#interpolacion" } ]
+    },
+    "cadena-interpolada-simple": {
+      "comment": "Cadena interpolada c'...' (con {expresiones})",
+      "begin": "c'",
+      "end": "'",
+      "name": "string.quoted.single.interpolated.cwin",
+      "patterns": [ { "include": "#interpolacion" } ]
+    },
+    "cadena-doble": {
+      "comment": "Cadena de texto \"...\" (sin secuencias de escape, igual que el lexer)",
+      "begin": "\\\"",
+      "end": "\\\"",
+      "name": "string.quoted.double.cwin"
+    },
+    "cadena-simple": {
+      "comment": "Cadena de texto '...'",
+      "begin": "'",
+      "end": "'",
+      "name": "string.quoted.single.cwin"
+    },
+    "interpolacion": {
+      "comment": "Expresiones {..} dentro de cadenas c\"...\"",
+      "patterns": [
+        {
+          "begin": "\\{",
+          "end": "\\}",
+          "name": "meta.interpolation.cwin",
+          "beginCaptures": { "0": { "name": "punctuation.definition.interpolation.begin.cwin" } },
+          "endCaptures": { "0": { "name": "punctuation.definition.interpolation.end.cwin" } },
+          "patterns": [
+            { "include": "#comparadores" },
+            { "include": "#flecha" },
+            { "include": "#asignacion" },
+            { "include": "#aritmetica" },
+            { "include": "#operadores-logicos" },
+            { "include": "#numeros" },
+            { "include": "#constantes" },
+            { "include": "#conversiones" },
+            { "include": "#integradas-llamada" },
+            { "include": "#tipos" },
+            { "include": "#llamadas" },
+            { "include": "#variables" }
+          ]
+        }
+      ]
+    },
+    "importar": {
+      "comment": "importar nombre | importar a.b.c | importar \"ruta\" como alias",
+      "name": "meta.import.cwin",
+      "match": "^\\s*(importar)\\s+((?:\\\"[^\\\"]*\\\")|(?:'[^']*')|(?:[A-Za-z_][\\w.]*))?(\\s+como\\s+([A-Za-z_]\\w*))?",
+      "captures": {
+        "1": { "name": "keyword.declaration.cwin" },
+        "2": {
+          "patterns": [
+            { "match": "\\\"[^\\\"]*\\\"|'[^']*'", "name": "string.quoted.cwin" },
+            { "match": "[A-Za-z_][\\w.]*", "name": "entity.name.module.cwin" }
+          ]
+        },
+        "3": { "name": "keyword.other.cwin" },
+        "4": { "name": "variable.other.cwin" }
+      }
+    },
+    "declaracion-funcion": {
+      "comment": "funcion nombre(...) / externa nombre(...)",
+      "match": "^\\s*(funcion|externa)\\s+([A-Za-z_]\\w*)",
+      "captures": {
+        "1": { "name": "keyword.declaration.cwin" },
+        "2": { "name": "entity.name.function.cwin" }
+      }
+    },
+    "declaracion-estructura": {
+      "comment": "estructura Nombre: ... campos ...",
+      "match": "^\\s*(estructura)\\s+([A-Za-z_]\\w*)",
+      "captures": {
+        "1": { "name": "keyword.declaration.cwin" },
+        "2": { "name": "entity.name.class.cwin" }
+      }
+    },
+    "palabras-control": {
+      "comment": "Palabras clave de control de flujo",
+      "match": "\\b(si|sino|demas|mientras|para|romper|continuar|retornar|intentar|capturar|finalmente|lanzar|relanzar)\\b",
+      "name": "keyword.control.cwin"
+    },
+    "palabras-declaracion": {
+      "comment": "Palabras clave de declaración (red de seguridad fuera de línea)",
+      "match": "\\b(funcion|externa|estructura)\\b",
+      "name": "keyword.declaration.cwin"
+    },
+    "palabras-otras": {
+      "comment": "Otras palabras clave",
+      "match": "\\b(como|tipo|importar)\\b",
+      "name": "keyword.other.cwin"
+    },
+    "integradas-sentencia": {
+      "comment": "Sentencias integradas del lenguaje",
+      "match": "\\b(escribir|leer|liberar)\\b",
+      "name": "keyword.other.builtin.cwin"
+    },
+    "conversiones": {
+      "comment": "Funciones de conversión integradas: entero(x), cadena(x), ... y alias en inglés",
+      "match": "\\b(entero|decimal|cadena|booleano|int|float|str|bool|dict|list)\\b(?=\\s*\\()",
+      "name": "support.function.conversion.cwin"
+    },
+    "integradas-llamada": {
+      "comment": "Funciones integradas llamadas como función: claves, valores, rango",
+      "match": "\\b(claves|valores|rango)\\b(?=\\s*\\()",
+      "name": "support.function.builtin.cwin"
+    },
+    "operadores-logicos": {
+      "match": "\\b(y|o|no|en)\\b",
+      "name": "keyword.operator.logical.cwin"
+    },
+    "tipos": {
+      "comment": "Tipos de dato (español + alias en inglés) y vacio",
+      "match": "\\b(entero|decimal|cadena|booleano|diccionario|lista|int|float|str|bool|dict|list|vacio)\\b",
+      "name": "storage.type.cwin"
+    },
+    "constantes": {
+      "match": "\\b(verdadero|falso|nulo)\\b",
+      "name": "constant.language.cwin"
+    },
+    "numeros": {
+      "match": "\\b\\d+(?:\\.\\d+)?\\b",
+      "name": "constant.numeric.cwin"
+    },
+    "comparadores": {
+      "match": "==|!=|<>|<=|>=|<|>",
+      "name": "keyword.operator.comparison.cwin"
+    },
+    "flecha": {
+      "match": "->",
+      "name": "keyword.operator.arrow.cwin"
+    },
+    "asignacion": {
+      "match": "\\+=|-=|=",
+      "name": "keyword.operator.assignment.cwin"
+    },
+    "aritmetica": {
+      "match": "[+\\-*/%]",
+      "name": "keyword.operator.arithmetic.cwin"
+    },
+    "brackets": {
+      "match": "[()\\[\\]{}]",
+      "name": "punctuation.definition.brackets.cwin"
+    },
+    "separadores": {
+      "match": "[,:]",
+      "name": "punctuation.separator.cwin"
+    },
+    "accesor": {
+      "match": "\\.",
+      "name": "punctuation.accessor.cwin"
+    },
+    "llamadas": {
+      "comment": "Llamada a función: nombre( — incluye funciones del usuario",
+      "match": "\\b([A-Za-z_]\\w*)\\b(?=\\s*\\()",
+      "captures": {
+        "1": { "name": "entity.name.function.cwin" }
+      }
+    },
+    "variables": {
+      "comment": "Todo identificador restante queda como variable (nunca sin color)",
+      "match": "[A-Za-z_]\\w*",
+      "name": "variable.other.cwin"
+    }
+  }
+}

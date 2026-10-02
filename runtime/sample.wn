@@ -1,0 +1,51 @@
+/* main.c — host en C que llama a una función Wini. */
+#include "wini_bridge.h"
+#include <stdio.h>
+
+/* Función Wini:
+ *
+ *   funcion procesar(items: lista<cadena>,
+ *                    pesos: diccionario<cadena, entero>): cadena
+ *       total: entero = 0
+ *       para it en items:
+ *           si it en pesos:
+ *               total += pesos[it]
+ *           sino:
+ *               lanzar ValueError("elemento sin peso: " + it)
+ *       retornar "total=" + cadena(total)
+ */
+extern WiniString *procesar(WiniList *items, WiniDict *pesos);
+
+int main(void) {
+    /* Lista dinámica */
+    WiniList *items = wini_bridge_list_vacia_cadena();
+    items = wini_bridge_list_append_cadena(items, wini_bridge_str("manzana"));
+    items = wini_bridge_list_append_cadena(items, wini_bridge_str("pera"));
+    items = wini_bridge_list_append_cadena(items, wini_bridge_str("uva"));
+
+    /* Diccionario */
+    WiniDict *pesos = wini_bridge_dict_nuevo();
+    wini_bridge_dict_set_entero_cstr(pesos, "manzana", 3);
+    wini_bridge_dict_set_entero_cstr(pesos, "pera",    5);
+    /* Ojo: no agregamos "uva" a propósito, para ver el error */
+
+    /* Llamada protegida */
+    wini_bridge_error err;
+    WiniString *res = NULL;
+    if (wini_bridge_call2((void (*)(void *, void *))procesar,
+                          items, pesos, &res, &err) < 0) {
+        fprintf(stderr, "Wini lanzó %s: %s (línea %lld)\n",
+                err.tipo, err.mensaje, (long long)err.linea);
+        free(err.mensaje);
+        wini_bridge_liberar_lista(items, WINI_TIPO_CADENA);
+        wini_bridge_liberar_dict(pesos, WINI_TIPO_CADENA, WINI_TIPO_ENTERO);
+        return 1;
+    }
+
+    printf("resultado: %s\n", wini_bridge_cstr(res));
+
+    wini_bridge_liberar_str(res);
+    wini_bridge_liberar_lista(items, WINI_TIPO_CADENA);
+    wini_bridge_liberar_dict(pesos, WINI_TIPO_CADENA, WINI_TIPO_ENTERO);
+    return 0;
+}

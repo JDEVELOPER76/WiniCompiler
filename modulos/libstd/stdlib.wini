@@ -1,0 +1,357 @@
+# funcion con utilidades de wini
+# usando funciones externas o internas de wini con el puente de C
+# Wini <-> C
+
+
+# Longitudes de tipos básicos de datos 
+
+#agarran de parametros un valor tipado y regresa su valor en formato entero : int
+
+funcion long_cadena(value: cadena) -> entero:
+    entero contador = 0
+    para char en value:
+        contador += 1
+    retornar contador
+
+
+# Longitudes de listas (una por tipo de elemento)
+
+
+funcion ilong_lista(value: lista<entero>) -> entero:
+    entero contador = 0
+    para item en value:
+        contador += 1
+    retornar contador
+
+funcion slong_lista(value: lista<cadena>) -> entero:
+    entero contador = 0
+    para item en value:
+        contador += 1
+    retornar contador
+
+funcion dlong_lista(value: lista<decimal>) -> entero:
+    entero contador = 0
+    para item en value:
+        contador += 1
+    retornar contador
+
+funcion blong_lista(value: lista<booleano>) -> entero:
+    entero contador = 0
+    para item en value:
+        contador += 1
+    retornar contador
+
+funcion agregar_entero(l: lista<entero>, x: entero) -> lista<entero>:
+    retornar l + [x]
+
+funcion agregar_cadena(l: lista<cadena>, x: cadena) -> lista<cadena>:
+    retornar l + [x]
+
+funcion agregar_decimal(l: lista<decimal>, x: decimal) -> lista<decimal>:
+    retornar l + [x]
+
+funcion agregar_booleano(l: lista<booleano>, x: booleano) -> lista<booleano>:
+    retornar l + [x]
+
+funcion cadena2lista(value: cadena) -> lista<cadena>:
+    lista<cadena> resultado = []
+    cadena buffer = ""
+    para ch en value:
+        si ch == " ":
+            si long_cadena(buffer) > 0:
+                resultado = resultado + [buffer]
+                buffer = ""
+        demas:
+            buffer = buffer + ch
+    si long_cadena(buffer) > 0:
+        resultado = resultado + [buffer]
+    retornar resultado
+
+funcion lista2cadena(value: lista<cadena>) -> cadena:
+    cadena resultado = ""
+    para item en value:
+        resultado = resultado + item + " "
+    retornar resultado
+
+
+# Longitudes de diccionarios (16 combinaciones clave x valor)
+# Esquema de nombres: <clave><valor>long_diccionario
+#   c = cadena
+#   e = entero
+#   d = decimal
+#   b = booleano
+
+
+# --- clave: cadena -------------------------------------------------
+
+funcion cclong_diccionario(value: diccionario<cadena, cadena>) -> entero:
+    entero contador = 0
+    para clave en value:
+        contador += 1
+    retornar contador
+
+funcion celong_diccionario(value: diccionario<cadena, entero>) -> entero:
+    entero contador = 0
+    para clave en value:
+        contador += 1
+    retornar contador
+
+funcion cdlong_diccionario(value: diccionario<cadena, decimal>) -> entero:
+    entero contador = 0
+    para clave en value:
+        contador += 1
+    retornar contador
+
+funcion cblong_diccionario(value: diccionario<cadena, booleano>) -> entero:
+    entero contador = 0
+    para clave en value:
+        contador += 1
+    retornar contador
+
+# --- clave: entero -------------------------------------------------
+
+funcion eclong_diccionario(value: diccionario<entero, cadena>) -> entero:
+    entero contador = 0
+    para clave en value:
+        contador += 1
+    retornar contador
+
+funcion eelong_diccionario(value: diccionario<entero, entero>) -> entero:
+    entero contador = 0
+    para clave en value:
+        contador += 1
+    retornar contador
+
+funcion edlong_diccionario(value: diccionario<entero, decimal>) -> entero:
+    entero contador = 0
+    para clave en value:
+        contador += 1
+    retornar contador
+
+funcion eblong_diccionario(value: diccionario<entero, booleano>) -> entero:
+    entero contador = 0
+    para clave en value:
+        contador += 1
+    retornar contador
+
+# --- clave: decimal ------------------------------------------------
+
+funcion dclong_diccionario(value: diccionario<decimal, cadena>) -> entero:
+    entero contador = 0
+    para clave en value:
+        contador += 1
+    retornar contador
+
+funcion delong_diccionario(value: diccionario<decimal, entero>) -> entero:
+    entero contador = 0
+    para clave en value:
+        contador += 1
+    retornar contador
+
+funcion ddlong_diccionario(value: diccionario<decimal, decimal>) -> entero:
+    entero contador = 0
+    para clave en value:
+        contador += 1
+    retornar contador
+
+funcion dblong_diccionario(value: diccionario<decimal, booleano>) -> entero:
+    entero contador = 0
+    para clave en value:
+        contador += 1
+    retornar contador
+
+# --- clave: booleano -----------------------------------------------
+
+funcion bclong_diccionario(value: diccionario<booleano, cadena>) -> entero:
+    entero contador = 0
+    para clave en value:
+        contador += 1
+    retornar contador
+
+funcion belong_diccionario(value: diccionario<booleano, entero>) -> entero:
+    entero contador = 0
+    para clave en value:
+        contador += 1
+    retornar contador
+
+funcion bdlong_diccionario(value: diccionario<booleano, decimal>) -> entero:
+    entero contador = 0
+    para clave en value:
+        contador += 1
+    retornar contador
+
+funcion bblong_diccionario(value: diccionario<booleano, booleano>) -> entero:
+    entero contador = 0
+    para clave en value:
+        contador += 1
+    retornar contador
+
+#funciones de comparacion con cadenas :string
+
+
+funcion es_minuscula(value: cadena) ->booleano:
+    para char en value:
+        si char < 'a' o char > 'z':
+            retornar falso
+    retornar verdadero
+
+funcion es_mayuscula(value: cadena) ->booleano:
+    para char en value:
+        si char < 'A' o char > 'Z':
+            retornar falso
+    retornar verdadero
+
+funcion contiene_minuscula(value:cadena) -> booleano:
+    para char en value:
+        si char >= 'a' y char <= 'z':
+            retornar verdadero
+    retornar falso
+
+funcion contiene_mayuscula(value:cadena) -> booleano:
+    para char en value:
+        si char >= 'A' y char <= 'Z':
+            retornar verdadero
+    retornar falso
+
+
+funcion contiene_numero(value: cadena) -> booleano:
+    cadena nums = "0123456789"
+    para ch en value:
+        para num en nums:
+            si ch == num:
+                retornar verdadero
+    retornar falso
+
+funcion empieza_en(value: cadena, param: cadena) -> booleano:
+    entero n = long_cadena(param)
+    entero m = long_cadena(value)
+    si n > m:
+        retornar falso
+    entero i = 0
+    mientras i < n:
+        si value[i] != param[i]:
+            retornar falso
+        i += 1
+    retornar verdadero
+
+funcion termina_en(value: cadena, param: cadena) -> booleano:
+    entero n = long_cadena(param)
+    entero m = long_cadena(value)
+    si n > m:
+        retornar falso
+    entero i = 0
+    mientras i < n:
+        si value[m - n + i] != param[i]:
+            retornar falso
+        i += 1
+    retornar verdadero
+
+funcion es_vacia(value: cadena) -> booleano:
+    retornar long_cadena(value) == 0
+
+funcion es_espacio(value: cadena) -> booleano:
+    si long_cadena(value) == 0:
+        retornar falso
+    para ch en value:
+        si ch != " ":
+            retornar falso
+    retornar verdadero
+
+funcion es_alfabetico(value: cadena) -> booleano:
+    si long_cadena(value) == 0:
+        retornar falso
+    para ch en value:
+        si ch >= 'a' y ch <= 'z':
+            continuar
+        si ch >= 'A' y ch <= 'Z':
+            continuar
+        retornar falso
+    retornar verdadero
+
+funcion es_alfanumerico(value: cadena) -> booleano:
+    si long_cadena(value) == 0:
+        retornar falso
+    para ch en value:
+        si ch >= 'a' y ch <= 'z':
+            continuar
+        si ch >= 'A' y ch <= 'Z':
+            continuar
+        si ch >= '0' y ch <= '9':
+            continuar
+        retornar falso
+    retornar verdadero
+
+funcion es_numero(value: cadena) -> booleano:
+    si long_cadena(value) == 0:
+        retornar falso
+    para ch en value:
+        si ch < '0' o ch > '9':
+            retornar falso
+    retornar verdadero
+
+funcion a_mayusculas(value: cadena) -> cadena:
+    cadena minus = "abcdefghijklmnopqrstuvwxyz"
+    cadena mayus = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    cadena resultado = ""
+    para ch en value:
+        entero idx = indice_de(minus, ch)
+        si idx >= 0:
+            resultado = resultado + mayus[idx]
+        demas:
+            resultado = resultado + ch
+    retornar resultado
+
+funcion a_minusculas(value: cadena) -> cadena:
+    cadena minus = "abcdefghijklmnopqrstuvwxyz"
+    cadena mayus = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    cadena resultado = ""
+    para ch en value:
+        entero idx = indice_de(mayus, ch)
+        si idx >= 0:
+            resultado = resultado + minus[idx]
+        demas:
+            resultado = resultado + ch
+    retornar resultado
+
+funcion capitalizar(value: cadena) -> cadena:
+    si long_cadena(value) == 0:
+        retornar ""
+    retornar a_mayusculas(value[0]) + a_minusculas(subcadena(value, 1, long_cadena(value)))
+
+funcion invertir_cadena(value: cadena) -> cadena:
+    cadena resultado = ""
+    entero i = long_cadena(value) - 1
+    mientras i >= 0:
+        resultado = resultado + value[i]
+        i -= 1
+    retornar resultado
+
+funcion indice_de(value: cadena, sub: cadena) -> entero:
+    entero n = long_cadena(value)
+    entero m = long_cadena(sub)
+    si m == 0:
+        retornar 0
+    si m > n:
+        retornar -1
+    entero i = 0
+    mientras i <= n - m:
+        si subcadena(value, i, i + m) == sub:
+            retornar i
+        i += 1
+    retornar -1
+
+funcion subcadena(value: cadena, inicio: entero, fin: entero) -> cadena:
+    entero n = long_cadena(value)
+    si inicio < 0:
+        inicio = 0
+    si fin > n:
+        fin = n
+    si inicio >= fin:
+        retornar ""
+    cadena resultado = ""
+    entero i = inicio
+    mientras i < fin:
+        resultado = resultado + value[i]
+        i += 1
+    retornar resultado
+

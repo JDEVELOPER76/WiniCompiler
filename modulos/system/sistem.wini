@@ -1,0 +1,97 @@
+# =====================================================================
+# sistema.wn
+# ---------------------------------------------------------------------
+# Declaraciones externas hacia runtime/sistema.c.
+
+
+externa "plataforma" como plataforma(): entero
+externa "ejecutar"   como ejecutar(cmd: cadena, salida: booleano): entero
+externa "existe"        como existe(ruta: cadena): booleano
+externa "es_directorio" como es_directorio(ruta: cadena): booleano
+externa "crear_archivox"     como crear_archivo(ruta: cadena): booleano
+externa "eliminar_archivox"  como eliminar_archivo(ruta: cadena): booleano
+externa "renombrar_archivox" como renombrar_archivo(vieja: cadena, nueva: cadena): booleano
+externa "copiar_archivox"    como copiar_archivo(origen: cadena, destino: cadena): booleano
+externa "mover_archivox"     como mover_archivo(origen: cadena, destino: cadena): booleano
+externa "peso_archivox"      como _peso_archivo(ruta: cadena): entero
+externa "leer_archivox"      como leer_archivo(ruta: cadena): cadena
+externa "agregar_a_archivox" como agregar_a_archivo(ruta: cadena, contenido: cadena): booleano
+externa "ruta_actualx"         como ruta_actual(): cadena
+externa "crear_directoriox"    como crear_directorio(ruta: cadena): booleano
+externa "eliminar_directoriox" como eliminar_directorio(ruta: cadena): booleano
+externa "cambiar_carpetax"     como cambiar_carpeta(ruta: cadena): booleano
+externa "listar_archivosx"     como listar_archivos(ruta: cadena): lista<cadena>
+externa "arquitecturax"   como _arquitectura(): cadena
+externa "include__version" como include__version(): cadena
+
+
+funcion sistema()->cadena:
+	int p = plataforma()
+	si p == 1 :
+		retornar "Windows"
+	si p == 2 :
+		retornar "MacOS"
+	si p == 3 :
+		retornar "Linux"
+	si p == 4 :
+		retornar "Unix"
+	retornar "Desconocido"
+
+funcion cmd(comando: cadena, salida:booleano) -> entero:
+	retornar ejecutar(comando, salida)
+
+
+funcion existe_archivo(ruta: cadena) -> booleano:
+	retornar existe(ruta)
+
+
+funcion es_dir(ruta: cadena) -> booleano:
+    retornar es_directorio(ruta)
+
+
+funcion c_archivo(ruta: cadena) -> booleano:
+	retornar crear_archivo(ruta)
+
+
+funcion e_archivo(ruta: cadena) -> booleano:
+	retornar eliminar_archivo(ruta)
+
+
+funcion r_archivo(vieja: cadena, nueva: cadena) -> booleano:
+	retornar renombrar_archivo(vieja, nueva)
+
+funcion cop_archivo(origen: cadena, destino: cadena) -> booleano:
+	retornar copiar_archivo(origen, destino)
+
+funcion m_archivo(origen: cadena, destino: cadena) -> booleano:
+	retornar mover_archivo(origen, destino)
+
+funcion peso_archivo(ruta: cadena) -> entero:
+	retornar _peso_archivo(ruta)
+
+funcion l_archivo(ruta: cadena) -> cadena:
+	retornar leer_archivo(ruta)
+
+funcion aga_archivo(ruta: cadena, contenido: cadena) -> booleano:
+	retornar agregar_a_archivo(ruta, contenido)
+
+funcion dir_actual() -> cadena:
+	retornar ruta_actual()
+
+funcion c_carpeta(ruta: cadena) -> booleano:
+	retornar crear_directorio(ruta)
+
+funcion e_carpeta(ruta: cadena) -> booleano:
+	retornar eliminar_directorio(ruta)
+
+funcion cb_carpeta(ruta: cadena) -> booleano:
+	retornar cambiar_carpeta(ruta)
+
+funcion list_archivos(ruta: cadena) -> lista<cadena>:
+	retornar listar_archivos(ruta)
+
+funcion arquitectura() -> cadena:
+	retornar _arquitectura()
+
+funcion modulo_v()-> cadena:
+	retornar include__version()

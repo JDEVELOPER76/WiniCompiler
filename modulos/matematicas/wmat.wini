@@ -1,0 +1,118 @@
+funcion abs_entero(n: entero) -> entero:
+    si n < 0:
+        retornar -n
+    retornar n
+
+funcion signo_entero(n: entero) -> entero:
+    si n > 0:
+        retornar 1
+    si n < 0:
+        retornar -1
+    retornar 0
+
+funcion menor_entero(a: entero, b: entero) -> entero:
+    si a < b:
+        retornar a
+    retornar b
+
+funcion mayor_entero(a: entero, b: entero) -> entero:
+    si a > b:
+        retornar a
+    retornar b
+
+funcion potencia_entero(base: entero, exp: entero) -> entero:
+    si exp < 0:
+        retornar 0
+    entero r = 1
+    entero i = 0
+    mientras i < exp:
+        r = r*base
+        i += 1
+    retornar r
+
+funcion factorial(n: entero) -> entero:
+    si n < 0:
+        retornar 0
+    entero r = 1
+    entero i = 2
+    mientras i <= n:
+        r = r*i
+        i += 1
+    retornar r
+
+funcion mcd(a: entero, b: entero) -> entero:
+    entero x = abs_entero(a)
+    entero y1 = abs_entero(b)
+    mientras y1 != 0:
+        entero t = y1
+        y1 = x % y1
+        x = t
+    retornar x
+
+funcion mcm(a: entero, b: entero) -> entero:
+    si a == 0 o b == 0:
+        retornar 0
+    retornar abs_entero(a * b) / mcd(a, b)
+
+funcion es_primo(n: entero) -> booleano:
+    si n < 2:
+        retornar falso
+    si n == 2:
+        retornar verdadero
+    si n % 2 == 0:
+        retornar falso
+    entero i = 3
+    mientras i * i <= n:
+        si n % i == 0:
+            retornar falso
+        i += 2
+    retornar verdadero
+
+funcion es_par(n: entero) -> booleano:
+    retornar n % 2 == 0
+
+funcion es_impar(n: entero) -> booleano:
+    retornar n % 2 != 0
+
+# --- decimales -----------------------------------------------------------
+funcion abs_decimal(n: decimal) -> decimal:
+    si n < 0.0:
+        retornar -n
+    retornar n
+
+funcion menor_decimal(a: decimal, b: decimal) -> decimal:
+    si a < b:
+        retornar a
+    retornar b
+
+funcion mayor_decimal(a: decimal, b: decimal) -> decimal:
+    si a > b:
+        retornar a
+    retornar b
+
+funcion redondear(n: decimal) -> entero:
+    si n >= 0.0:
+        retornar entero(n + 0.5)
+    retornar entero(n - 0.5)
+
+funcion piso(n: decimal) -> entero:
+    entero t = entero(n)
+    si n < 0.0 y decimal(t) != n:
+        retornar t - 1
+    retornar t
+
+funcion techo(n: decimal) -> entero:
+    entero t = entero(n)
+    si n > 0.0 y decimal(t) != n:
+        retornar t + 1
+    retornar t
+
+funcion raiz_cuadrada(n: decimal) -> decimal:
+    si n <= 0.0:
+        retornar 0.0
+    decimal x = n
+    decimal y1 = (x + 1.0) / 2.0
+    mientras abs_decimal(y1 - x) > 0.0000001:
+        x = y1
+        y1 = (x + n / x) / 2.0
+    retornar x

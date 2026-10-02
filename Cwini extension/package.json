@@ -1,0 +1,95 @@
+{
+  "name": "cwin-language",
+  "displayName": "Cwin Language Support (Wini)",
+  "description": "Soporte completo para el lenguaje Cwin (.cwn/.wini): resaltado 100% a color, documentación de las funciones integradas y de los comentarios al hacer hover, detección silenciosa del compilador (where/which cwini), búsqueda de módulos e iconos propios para .cwn y .wini.",
+  "version": "1.0.0",
+  "publisher": "Jdeveloper",
+  "icon": "icons/icono.png",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Programming Languages", "Themes"],
+  "keywords": ["cwin", "wini", "cwn", "winic", "cwini", "lenguaje en español"],
+  "license": "MIT",
+  "activationEvents": ["onLanguage:cwin", "onLanguage:wini"],
+  "main": "./src/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "cwin",
+        "aliases": ["Cwin", "cwin"],
+        "extensions": [".cwn", ".wn"],
+        "configuration": "./language-configuration.json",
+        "icon": { "light": "./icons/cwn.svg", "dark": "./icons/cwn.svg" }
+      },
+      {
+        "id": "wini",
+        "aliases": ["Wini", "wini"],
+        "extensions": [".wini"],
+        "configuration": "./language-configuration.json",
+        "icon": { "light": "./icons/wini.svg", "dark": "./icons/wini.svg" }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "cwin",
+        "scopeName": "source.cwin",
+        "path": "./syntaxes/cwin.tmLanguage.json"
+      },
+      {
+        "language": "wini",
+        "scopeName": "source.wini",
+        "path": "./syntaxes/wini.tmLanguage.json"
+      }
+    ],
+    "themes": [
+      {
+        "label": "Cwin Dark",
+        "uiTheme": "vs-dark",
+        "path": "./themes/cwin-dark.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "cwin.buscarCompilador",
+        "title": "Cwin: Buscar compilador (where/which cwini)"
+      },
+      {
+        "command": "cwin.listarModulos",
+        "title": "Cwin: Listar módulos detectados"
+      },
+      {
+        "command": "cwin.reescanearModulos",
+        "title": "Cwin: Reescanear módulos"
+      },
+      {
+        "command": "cwin.activarTema",
+        "title": "Cwin: Activar tema Cwin Dark"
+      }
+    ],
+    "configuration": {
+      "title": "Cwin",
+      "properties": {
+        "cwin.compilador.ruta": {
+          "type": "string",
+          "default": "",
+          "description": "Ruta del ejecutable del compilador (cwini/winic). Si se deja vacío, se detecta en silencio con 'where cwini' (Windows) o 'which cwini' (Linux/macOS), con 'winic' como alternativa."
+        },
+        "cwin.modulos.carpetasExtra": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Carpetas adicionales donde buscar módulos (.cwn/.wn/.wini), además del propio proyecto y de la carpeta del compilador."
+        },
+        "cwin.modulos.buscarJuntoAlCompilador": {
+          "type": "boolean",
+          "default": true,
+          "description": "Buscar módulos también en la carpeta del compilador detectado (where/which cwini) y en su subcarpeta 'modulos/'."
+        },
+        "cwin.diagnosticos.importaciones": {
+          "type": "boolean",
+          "default": true,
+          "description": "Marcar con un aviso los 'importar' cuyo módulo no se pueda resolver en ninguna de las rutas conocidas."
+        }
+      }
+    }
+  }
+}
