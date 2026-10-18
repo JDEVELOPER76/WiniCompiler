@@ -32,6 +32,13 @@ type cgVar struct {
 	tip Tipo
 }
 
+// temporalEnCurso es una referencia heap creada a mitad del cálculo de una
+// expresión, que se libera si la expresión termina lanzando una excepción.
+type temporalEnCurso struct {
+	ref value.Value
+	tip Tipo
+}
+
 type loopLabels struct {
 	cond *ir.Block
 	end  *ir.Block
@@ -41,6 +48,12 @@ type loopLabels struct {
 	// RETORNO): si no, se liberaría la única referencia justo antes de
 	// devolverla.
 	nombreVar string
+	// varPtr es el alloca de esa misma variable de iteración. Con
+	// shadowing ('para x en a: para x en b:') dos loops distintos pueden
+	// llamarse 'x', así que el nombre no alcanza para saber si son la
+	// misma variable: lo que las distingue es la ranura (ver
+	// esLaMismaVariable).
+	varPtr value.Value
 	// tryFramesAlEntrar es len(Codegen.tryFrames) justo al entrar a este
 	// bucle: 'romper'/'continuar' lo usan como nivel objetivo para
 	// desapilarTryFrames, de modo que solo corran el 'finalmente' y
@@ -151,6 +164,8 @@ type Codegen struct {
 	rtPrintDict   *ir.Func
 	rtStringNew   *ir.Func
 	rtReadString  *ir.Func
+	rtStringToI64  *ir.Func
+	rtStringToF64  *ir.Func
 	// Longitud y acceso por índice de cadena, usados por 'para ... en'
 	// cuando el iterable es una cadena (recorre sus bytes uno a uno).
 	rtStringLen     *ir.Func
@@ -170,6 +185,15 @@ type Codegen struct {
 	rtRetenerLista       *ir.Func
 	rtRetenerDiccionario *ir.Func
 
+	// Raíces de excepción (limpieza automática al desenrollar): cada
+	// variable local heap se registra una vez al entrar a la función y la
+	// función poda las suyas al retornar; 'lanzar'/'relanzar' liberan las
+	// que queden vivas antes de saltar. Ver runtime.h (wini_raiz_agregar).
+	rtRaizAgregar        *ir.Func
+	rtRaicesProfundidad  *ir.Func
+	rtRaicesPodar        *ir.Func
+	rtInvocacionNueva    *ir.Func
+
 	// Excepciones (intentar/capturar/finalmente/lanzar). Ver runtime.h.
 	rtTryPush               *ir.Func
 	rtTryPop                *ir.Func
@@ -180,6 +204,18 @@ type Codegen struct {
 	rtExcepcionTomarMensaje *ir.Func
 	rtExcepcionDescartar    *ir.Func
 	rtSetjmp                *ir.Func
+
+	// Runtime: verificación aritmética
+	// Verifica que el divisor de una división/módulo ENTERO no sea cero y
+	// lanza un ErrorMatematico capturable si lo es (ver runtime.c). Sin
+	// esto, un '/ 0' entero moriría con SIGFPE, que no se puede capturar
+	// con 'intentar/capturar'.
+	rtCheckDivisor *ir.Func
+	// rtCheckDivisorDecimal verifica el divisor de una división decimal
+	// por cero: IEEE-754 daría infinito en silencio, pero el lenguaje lo
+	// trata como error (igual que el entero) para que la operación se
+	// comporte igual según el tipo de los operandos.
+	rtCheckDivisorDecimal *ir.Func
 
 	// Runtime: string concatenation and conversions
 	rtStringConcat *ir.Func
@@ -212,6 +248,40 @@ type Codegen struct {
 	rtListSetF64 *ir.Func
 	rtListSetI1  *ir.Func
 	rtListSetStr *ir.Func
+	rtListInsertI64 *ir.Func
+	rtListInsertF64 *ir.Func
+	rtListInsertI1  *ir.Func
+	rtListInsertStr *ir.Func
+	rtListRemove    *ir.Func
+
+	// funcionesPorNombre indexa c.module.Funcs por nombre para que
+	// buscarFuncion no tenga que recorrerlo entero en cada consulta
+	// (ver buscarFuncion). Se arma laxo en el primer uso.
+	funcionesPorNombre map[string]*ir.Func
+
+	// temporalesEnCurso son valores heap que se construyeron a mitad de una
+	// expresión y todavía no tienen dueño estable (el 'result' parcial de
+	// una cadena interpolada, por ejemplo). Si más adelante esa expresión
+	// LANZA en runtime, el 'lanzar' recorre esta lista y devuelve las
+	// referencias antes de hacer longjmp: si no, se fugan
+	// (confirmado con LeakSanitizer).
+	temporalesEnCurso []temporalEnCurso
+
+	// Runtime: listas genéricas (elementos lista o estructura). Ver
+	// "listas genéricas" en runtime.h y descriptorElemento más abajo.
+	rtListNewGen    *ir.Func
+	rtListSlot      *ir.Func
+	rtListSetGen    *ir.Func
+	rtListConcatGen *ir.Func
+	rtListInsertGen *ir.Func
+	rtListRemoveGen *ir.Func
+
+	// descriptores guarda, por tipo de elemento (Tipo.String()), la
+	// constante global WiniElemDesc ya emitida; thunks hace lo mismo con
+	// las funciones retener/liberar emitidas por estructura. Así cada
+	// descriptor/thunk se emite una sola vez por módulo.
+	descriptores map[string]constant.Constant
+	thunks       map[string]*ir.Func
 
 	// Runtime: range
 	rtRangeI64 *ir.Func
@@ -223,10 +293,25 @@ type Codegen struct {
 	rtDictNew      *ir.Func
 	rtDictLen      *ir.Func
 	rtDictContains map[string]*ir.Func
-	rtDictSet      map[string]*ir.Func
-	rtDictGet      map[string]*ir.Func
-	rtDictKeys     map[string]*ir.Func
-	rtDictValues   map[string]*ir.Func
+	// rtListSlotStr y rtDictSlotStr devuelven la DIRECCIÓN de una ranura
+	// (i8**) para poder escribirle NULL después de 'liberar' un elemento.
+	// Sin esto, un 'liberar(l)' posterior liberaba dos veces la misma
+	// memoria (doble free confirmado con AddressSanitizer).
+	rtListSlotStr *ir.Func
+	// rtDictSlotStr devuelve la dirección de la ranura de un valor de tipo
+	// cadena en un diccionario de claves cadena. La usa 'liberar(d[clave])'
+	// para dejarle NULL después de soltar la referencia y evitar el doble
+	// free de un 'liberar(d)' posterior.
+	rtDictSlotStr *ir.Func
+	rtDictSet     map[string]*ir.Func
+	rtDictGet     map[string]*ir.Func
+	rtDictKeys    map[string]*ir.Func
+	rtDictValues  map[string]*ir.Func
+	// Variantes genéricas del valor de diccionario (lista o estructura):
+	// una por tipo de CLAVE primitiva (set/slot), más valores() genérico.
+	rtDictSetGen    map[string]*ir.Func
+	rtDictSlotGen   map[string]*ir.Func
+	rtDictValuesGen *ir.Func
 
 	funciones   map[string]*TipoFuncion
 	llvmFuncs   map[string]*ir.Func
@@ -240,9 +325,27 @@ type Codegen struct {
 	funcionActual     *TipoFuncion
 	funcionActualNodo *Nodo
 	currentFunc       *ir.Func
+	initBlock         *ir.Block
 	entryBlock        *ir.Block
 	currentBlock      *ir.Block
 	blockTerminated   bool
+
+	// raizBasePtr es el alloca (en el bloque de entrada) que guarda la
+	// profundidad de la pila de raíces al entrar a la función actual.
+	// Cada 'retornar' (y el retorno implícito) poda hasta esa base antes
+	// de salir, descartando las raíces de la función sin leerlas. Nil en
+	// funciones generadas que no registran raíces (thunks, wrapper main).
+	raizBasePtr value.Value
+	// raizFidPtr es el alloca (en el bloque de entrada) que guarda el fid
+	// de esta invocación (ver wini_invocacion_nueva): identifica las
+	// raíces propias al registrarlas y al empujar frames de 'intentar'.
+	// Nil donde raizBasePtr lo es.
+	raizFidPtr value.Value
+	// regionesTry es la pila de regiones abandonables activas: cada
+	// 'intentar' en compilación apila una, y cada ranura registrada se
+	// anota en todas. Al aterrizar en un despacho se liberan las de ese
+	// 'try'; 'lanzar'/'relanzar' liberan las de todas. Idempotente.
+	regionesTry [][]ranuraRegion
 
 	labelCounter int
 }
@@ -308,6 +411,14 @@ func CompileFileToLLVM(source string, rutaEntrada string) (string, []string, err
 	return NuevoCompilador("wini_module").CompilarArchivo(source, rutaEntrada)
 }
 
+// UltimasAvisas devuelve las advertencias no fatales de la última
+// compilación hecha con CompileFileToLLVM (por ejemplo, código
+// inalcanzable). No son errores: la compilación igual genera el binario.
+// Devuelve nil si aún no se compiló nada, o si no hubo advertencias.
+func UltimasAvisas() []Avisa {
+	return AvisasDelVerificador()
+}
+
 func NewCodegen(moduleName string) *Codegen {
 	m := ir.NewModule()
 	m.SourceFilename = moduleName
@@ -318,6 +429,8 @@ func NewCodegen(moduleName string) *Codegen {
 		llvmFuncs:       map[string]*ir.Func{},
 		estructuras:     map[string]*TipoEstructura{},
 		stringConstants: map[string]*ir.Global{},
+		descriptores:    map[string]constant.Constant{},
+		thunks:          map[string]*ir.Func{},
 	}
 
 	stringPtr := types.NewPointer(types.I8)
@@ -340,6 +453,12 @@ func NewCodegen(moduleName string) *Codegen {
 		ir.NewParam("len", types.I64))
 	c.rtReadString = m.NewFunc("wini_read_string", stringPtr,
 		ir.NewParam("prompt", stringPtr))
+	c.rtStringToI64 = m.NewFunc("wini_string_to_i64", types.I64,
+		ir.NewParam("s", stringPtr),
+		ir.NewParam("linea", types.I64))
+	c.rtStringToF64 = m.NewFunc("wini_string_to_f64", types.Double,
+		ir.NewParam("s", stringPtr),
+		ir.NewParam("linea", types.I64))
 	c.rtStringLen = m.NewFunc("wini_string_len", types.I64,
 		ir.NewParam("s", stringPtr))
 	c.rtStringGetChar = m.NewFunc("wini_string_get_char", stringPtr,
@@ -365,8 +484,25 @@ func NewCodegen(moduleName string) *Codegen {
 	c.rtRetenerDiccionario = m.NewFunc("wini_dict_retener", types.NewPointer(types.I8),
 		ir.NewParam("dict", types.NewPointer(types.I8)))
 
+	// Raíces de excepción (ver runtime.h): registrar la ranura de cada
+	// local heap para que 'lanzar' la libere al desenrollar.
+	c.rtRaizAgregar = m.NewFunc("wini_raiz_agregar", types.Void,
+		ir.NewParam("ranura", stringPtr),
+		ir.NewParam("kind", types.I32),
+		ir.NewParam("aux1", types.I32),
+		ir.NewParam("aux2", types.I32),
+		ir.NewParam("fid", types.I64))
+	c.rtRaicesProfundidad = m.NewFunc("wini_raices_profundidad", types.I64)
+	c.rtRaicesPodar = m.NewFunc("wini_raices_podar", types.Void,
+		ir.NewParam("prof", types.I64))
+	// Identidad de invocación para las raíces (ver wini_invocacion_nueva
+	// en runtime.h): monótona con el anidado de llamados, distingue lo
+	// abandonado (fid mayor) de lo que sobrevive.
+	c.rtInvocacionNueva = m.NewFunc("wini_invocacion_nueva", types.I64)
+
 	// Excepciones
-	c.rtTryPush = m.NewFunc("wini_try_push", types.NewPointer(types.I8))
+	c.rtTryPush = m.NewFunc("wini_try_push", types.NewPointer(types.I8),
+		ir.NewParam("fid", types.I64))
 	c.rtTryPop = m.NewFunc("wini_try_pop", types.Void)
 	c.rtTryPopSaltado = m.NewFunc("wini_try_pop_saltado", types.Void)
 	c.rtLanzar = m.NewFunc("wini_lanzar", types.Void,
@@ -385,6 +521,12 @@ func NewCodegen(moduleName string) *Codegen {
 	// función que lo tiene se ejecuta una sola vez.
 	c.rtSetjmp = m.NewFunc("setjmp", types.I32, ir.NewParam("env", types.NewPointer(types.I8)))
 	c.rtSetjmp.FuncAttrs = append(c.rtSetjmp.FuncAttrs, enum.FuncAttrReturnsTwice)
+
+	// Verificación aritmética (división entera por cero)
+	c.rtCheckDivisor = m.NewFunc("wini_check_divisor", types.Void,
+		ir.NewParam("dividendo", types.I64),
+		ir.NewParam("divisor", types.I64),
+		ir.NewParam("linea", types.I64))
 
 	// String concatenation and conversions
 	c.rtStringConcat = m.NewFunc("wini_string_concat", stringPtr,
@@ -482,6 +624,86 @@ func NewCodegen(moduleName string) *Codegen {
 		ir.NewParam("value", stringPtr),
 		ir.NewParam("linea", types.I64))
 
+	// Insertar un elemento en una posición (builtins 'insertar'):
+	// devuelven una lista NUEVA (la original no se modifica).
+	c.rtListInsertI64 = m.NewFunc("wini_list_insert_i64", listPtr,
+		ir.NewParam("list", listPtr),
+		ir.NewParam("idx", types.I64),
+		ir.NewParam("value", types.I64),
+		ir.NewParam("linea", types.I64))
+	c.rtListInsertF64 = m.NewFunc("wini_list_insert_f64", listPtr,
+		ir.NewParam("list", listPtr),
+		ir.NewParam("idx", types.I64),
+		ir.NewParam("value", types.Double),
+		ir.NewParam("linea", types.I64))
+	c.rtListInsertI1 = m.NewFunc("wini_list_insert_i1", listPtr,
+		ir.NewParam("list", listPtr),
+		ir.NewParam("idx", types.I64),
+		ir.NewParam("value", types.I1),
+		ir.NewParam("linea", types.I64))
+	c.rtListInsertStr = m.NewFunc("wini_list_insert_str", listPtr,
+		ir.NewParam("list", listPtr),
+		ir.NewParam("idx", types.I64),
+		ir.NewParam("value", stringPtr),
+		ir.NewParam("linea", types.I64))
+	// Quitar el elemento de una posición (builtin 'quitar'): devuelve una
+	// lista NUEVA sin ese elemento. 'tipo' usa los códigos de concat.
+	c.rtListRemove = m.NewFunc("wini_list_remove", listPtr,
+		ir.NewParam("list", listPtr),
+		ir.NewParam("idx", types.I64),
+		ir.NewParam("tipo", types.I32),
+		ir.NewParam("linea", types.I64))
+
+	// Listas genéricas (elementos lista o estructura). El descriptor viaja
+	// como i8* (la constante global se castea al emitirla).
+	c.rtListNewGen = m.NewFunc("wini_list_new_gen", listPtr,
+		ir.NewParam("desc", types.NewPointer(types.I8)),
+		ir.NewParam("data", types.NewPointer(types.I8)),
+		ir.NewParam("len", types.I64))
+	c.rtListSlot = m.NewFunc("wini_list_slot", types.NewPointer(types.I8),
+		ir.NewParam("list", listPtr),
+		ir.NewParam("idx", types.I64),
+		ir.NewParam("linea", types.I64))
+	// Verificación aritmética de división decimal por cero (ver el runtime).
+	c.rtCheckDivisorDecimal = m.NewFunc("wini_check_divisor_decimal", types.Void,
+		ir.NewParam("divisor", types.Double),
+		ir.NewParam("linea", types.I64))
+	// wini_list_slot_str(list, idx, linea) -> dirección de la ranura de un
+	// elemento de tipo cadena (lista<cadena>). La usa 'liberar(l[i])' para
+	// dejarle NULL después de soltar la referencia.
+	c.rtListSlotStr = m.NewFunc("wini_list_slot_str",
+		types.NewPointer(types.NewPointer(types.I8)),
+		ir.NewParam("list", listPtr),
+		ir.NewParam("idx", types.I64),
+		ir.NewParam("linea", types.I64))
+	// wini_dict_slot_str(dict, clave) -> dirección de la ranura del valor
+	// (o NULL si la clave no está).
+	c.rtDictSlotStr = m.NewFunc("wini_dict_slot_str",
+		types.NewPointer(types.NewPointer(types.I8)),
+		ir.NewParam("dict", types.NewPointer(types.I8)),
+		ir.NewParam("clave", stringPtr))
+	c.rtListSetGen = m.NewFunc("wini_list_set_gen", types.Void,
+		ir.NewParam("list", listPtr),
+		ir.NewParam("idx", types.I64),
+		ir.NewParam("valor", types.NewPointer(types.I8)),
+		ir.NewParam("desc", types.NewPointer(types.I8)),
+		ir.NewParam("linea", types.I64))
+	c.rtListConcatGen = m.NewFunc("wini_list_concat_gen", listPtr,
+		ir.NewParam("a", listPtr),
+		ir.NewParam("b", listPtr),
+		ir.NewParam("desc", types.NewPointer(types.I8)))
+	c.rtListInsertGen = m.NewFunc("wini_list_insert_gen", listPtr,
+		ir.NewParam("list", listPtr),
+		ir.NewParam("idx", types.I64),
+		ir.NewParam("valor", types.NewPointer(types.I8)),
+		ir.NewParam("desc", types.NewPointer(types.I8)),
+		ir.NewParam("linea", types.I64))
+	c.rtListRemoveGen = m.NewFunc("wini_list_remove_gen", listPtr,
+		ir.NewParam("list", listPtr),
+		ir.NewParam("idx", types.I64),
+		ir.NewParam("desc", types.NewPointer(types.I8)),
+		ir.NewParam("linea", types.I64))
+
 	// Range function
 	c.rtRangeI64 = m.NewFunc("wini_range_i64", listPtr,
 		ir.NewParam("start", types.I64),
@@ -503,6 +725,8 @@ func NewCodegen(moduleName string) *Codegen {
 	c.rtDictGet = map[string]*ir.Func{}
 	c.rtDictKeys = map[string]*ir.Func{}
 	c.rtDictValues = map[string]*ir.Func{}
+	c.rtDictSetGen = map[string]*ir.Func{}
+	c.rtDictSlotGen = map[string]*ir.Func{}
 
 	primTipos := []struct {
 		suf string
@@ -527,9 +751,39 @@ func NewCodegen(moduleName string) *Codegen {
 			c.rtDictGet[combo] = m.NewFunc("wini_dict_get_"+combo, v.lt,
 				ir.NewParam("dict", dictPtr), ir.NewParam("clave", k.lt))
 		}
+		// Variantes genéricas del valor (lista o estructura): el valor viaja
+		// por puntero opaco más su descriptor (ver WiniElemDesc). Las claves
+		// siguen siendo primitivas (una por tipo, igual que arriba).
+		c.rtDictSetGen[k.suf] = m.NewFunc("wini_dict_set_"+k.suf+"_gen", types.Void,
+			ir.NewParam("dict", dictPtr), ir.NewParam("clave", k.lt),
+			ir.NewParam("valor", stringPtr), ir.NewParam("desc", stringPtr))
+		c.rtDictSlotGen[k.suf] = m.NewFunc("wini_dict_slot_"+k.suf+"_gen", stringPtr,
+			ir.NewParam("dict", dictPtr), ir.NewParam("clave", k.lt),
+			ir.NewParam("desc", stringPtr), ir.NewParam("linea", types.I64))
 	}
+	// Valores del diccionario como lista genérica (builtin 'valores' con
+	// valor lista/estructura).
+	c.rtDictValuesGen = m.NewFunc("wini_dict_values_gen", listPtr,
+		ir.NewParam("dict", dictPtr), ir.NewParam("desc", stringPtr))
 
 	return c
+}
+
+// Tablas de predicados para las comparaciones, a nivel de paquete.
+//
+// Antes se escribía un literal de mapa dentro de emitirComparacion, lo que
+// obligaba al compilador de Go a construir un map, hashear la clave y
+// buscar, en CADA comparación que emitía. Son tablas constantes de 7
+// entradas: inicializarlas una sola vez al cargar el paquete las convierte
+// en una simple lectura.
+var predicadosEntero = map[string]enum.IPred{
+	"==": enum.IPredEQ, "!=": enum.IPredNE, "<>": enum.IPredNE,
+	"<": enum.IPredSLT, "<=": enum.IPredSLE, ">": enum.IPredSGT, ">=": enum.IPredSGE,
+}
+
+var predicadosDecimal = map[string]enum.FPred{
+	"==": enum.FPredOEQ, "!=": enum.FPredONE, "<>": enum.FPredONE,
+	"<": enum.FPredOLT, "<=": enum.FPredOLE, ">": enum.FPredOGT, ">=": enum.FPredOGE,
 }
 
 // primSuffix devuelve el sufijo usado en los símbolos runtime de listas/
@@ -628,14 +882,14 @@ func (c *Codegen) emitirLiberarValor(ref value.Value, t Tipo) {
 	}
 	switch tt := t.(type) {
 	case *TipoLista:
-		code := tipoCode(tt.Elemento)
+		code := codigoElemento(tt.Elemento)
 		if code == -1 {
 			return
 		}
 		c.currentBlock.NewCall(c.rtLiberarLista, ref, constant.NewInt(types.I32, int64(code)))
 	case *TipoDiccionario:
 		claveCode := tipoCode(tt.Clave)
-		valorCode := tipoCode(tt.Valor)
+		valorCode := codigoElemento(tt.Valor)
 		if claveCode == -1 || valorCode == -1 {
 			return
 		}
@@ -644,6 +898,429 @@ func (c *Codegen) emitirLiberarValor(ref value.Value, t Tipo) {
 	default:
 		c.currentBlock.NewCall(c.rtLiberarCadena, ref)
 	}
+}
+
+// ranuraRegion es una ranura con dueño anotada en una región de 'try':
+// al abandonar la región (despacho del 'capturar', 'lanzar' o 'relanzar')
+// se libera su contenido y se la deja en NULL. Idempotente.
+type ranuraRegion struct {
+	ptr value.Value
+	tip Tipo
+}
+
+// ---------------------------------------------------------------------
+// Raíces de excepción: registro de locales heap para limpieza automática
+// al desenrollar (ver wini_raiz_agregar en runtime.h).
+// ---------------------------------------------------------------------
+
+// Códigos de kind para wini_raiz_agregar (ver runtime.h).
+const (
+	raizKindCadena = 0
+	raizKindLista  = 1
+	raizKindDicc   = 2
+)
+
+// raizCodigos traduce un tipo heap a los (kind, aux1, aux2) de
+// wini_raiz_agregar, con el mismo criterio que emitirLiberarValor: los
+// tipos que el runtime no sabe liberar no se registran (ok == false).
+func raizCodigos(t Tipo) (kind, aux1, aux2 int64, ok bool) {
+	switch tt := t.(type) {
+	case *TipoLista:
+		code := codigoElemento(tt.Elemento)
+		if code == -1 {
+			return 0, 0, 0, false
+		}
+		return raizKindLista, int64(code), 0, true
+	case *TipoDiccionario:
+		claveCode := tipoCode(tt.Clave)
+		valorCode := codigoElemento(tt.Valor)
+		if claveCode == -1 || valorCode == -1 {
+			return 0, 0, 0, false
+		}
+		return raizKindDicc, int64(claveCode), int64(valorCode), true
+	default:
+		if t.Igual(TipoCadena) {
+			return raizKindCadena, 0, 0, true
+		}
+		return 0, 0, 0, false
+	}
+}
+
+// registrarRaiz registra la ranura 'slot' (alloca o campo) de tipo 't'
+// como raíz de excepción, emitiendo en el bloque de entrada (corre una
+// sola vez por invocación). Las estructuras se descomponen por campo: un
+// campo heap se registra igual que una variable, y los campos sin
+// referencias se ignoran. Llamar solo con slots ya inicializados a NULL
+// (o cero, para estructuras): el desenrollado libera lo que encuentre no
+// nulo, así que basura sin inicializar sería un free inválido.
+//
+// Además anota la ranura en todas las regiones de 'try' activas (ver
+// regionesTry): si una excepción abandona esas regiones, el despacho del
+// 'capturar' (o el propio 'lanzar'/'relanzar') libera y anula esas
+// ranuras. Es idempotente ('liberar' + NULL): una ranura ya liberada se
+// saltea sin hacer nada.
+func (c *Codegen) registrarRaiz(slot value.Value, t Tipo) {
+	if st, ok := t.(*TipoEstructura); ok {
+		tipoLLVM := c.llvmType(st)
+		for i, f := range st.Campos {
+			if !poseeReferencias(f.Tipo) {
+				continue
+			}
+			campoPtr := c.initBlock.NewGetElementPtr(tipoLLVM, slot,
+				constant.NewInt(types.I32, 0), constant.NewInt(types.I32, int64(i)))
+			c.registrarRaiz(campoPtr, f.Tipo)
+		}
+		return
+	}
+	kind, aux1, aux2, ok := raizCodigos(t)
+	if !ok {
+		return
+	}
+	i8p := types.NewPointer(types.I8)
+	slot8 := c.initBlock.NewBitCast(slot, i8p)
+	// El fid vive en un alloca del bloque de entrada: se lee ahí mismo,
+	// una sola vez por invocación, junto al registro.
+	var fid value.Value = constant.NewInt(types.I64, 0)
+	if c.raizFidPtr != nil {
+		fid = c.initBlock.NewLoad(types.I64, c.raizFidPtr)
+	}
+	c.initBlock.NewCall(c.rtRaizAgregar, slot8,
+		constant.NewInt(types.I32, kind),
+		constant.NewInt(types.I32, aux1),
+		constant.NewInt(types.I32, aux2),
+		fid)
+	// La ranura queda anotada en cada región de 'try' activa: si una
+	// excepción abandona esas regiones, sus ganchos la liberan y anulan.
+	for i := range c.regionesTry {
+		c.regionesTry[i] = append(c.regionesTry[i], ranuraRegion{ptr: slot, tip: t})
+	}
+}
+
+// podarRaicesAlRetornar descarta las raíces registradas por la función
+// actual, sin liberarlas (camino normal: lo que seguía vivo acá ya lo
+// liberó el propio 'retornar', o pasa al llamador como valor de retorno).
+// Emítase justo antes de cada 'ret' de una función de usuario.
+func (c *Codegen) podarRaicesAlRetornar() {
+	if c.raizBasePtr == nil {
+		return
+	}
+	base := c.currentBlock.NewLoad(types.I64, c.raizBasePtr)
+	c.currentBlock.NewCall(c.rtRaicesPodar, base)
+}
+
+// emitirLiberarYAnular libera el contenido heap de la ranura 'slot' de
+// tipo 't' y la deja en NULL/cero. Es la contrapartida en flujo de una
+// raíz registrada: idempotente (una ranura ya liberada se saltea sin
+// hacer nada, porque 'liberar' anula y los liberar_* toleran NULL).
+func (c *Codegen) emitirLiberarYAnular(slot value.Value, t Tipo) {
+	if st, ok := t.(*TipoEstructura); ok {
+		if poseeReferencias(st) {
+			val := c.currentBlock.NewLoad(c.llvmType(st), slot)
+			c.emitirLiberarEnValor(val, st)
+		}
+		c.currentBlock.NewStore(constant.NewZeroInitializer(c.llvmType(st)), slot)
+		return
+	}
+	if !esTipoHeap(t) {
+		return
+	}
+	var actual value.Value
+	switch t.(type) {
+	case *TipoLista, *TipoDiccionario:
+		actual = c.currentBlock.NewLoad(types.NewPointer(types.I8), slot)
+	default:
+		actual = c.currentBlock.NewLoad(c.llvmType(t), slot)
+	}
+	c.emitirLiberarValor(actual, t)
+	c.currentBlock.NewStore(constant.NewNull(types.NewPointer(types.I8)), slot)
+}
+
+// liberarRegion libera y anula cada ranura de la región (ver
+// regionesTry). Nulo si ya estaban liberadas.
+func (c *Codegen) liberarRegion(slots []ranuraRegion) {
+	for _, s := range slots {
+		c.emitirLiberarYAnular(s.ptr, s.tip)
+	}
+}
+
+// ---------------------------------------------------------------------
+// Listas de listas y de estructuras: propiedad de referencias y descriptores
+// ---------------------------------------------------------------------
+
+// tipoCodeGenerico es el 'tipo' que se le pasa al runtime para una lista
+// cuyos elementos son listas o estructuras (ver WINI_TIPO_GENERICO en
+// runtime.h): el runtime lo ignora, porque esas listas llevan su propio
+// descriptor de elemento.
+const tipoCodeGenerico = 4
+
+// esElementoGenerico indica si 't', como elemento de lista, necesita el
+// camino genérico del runtime (descriptor + slots) en vez de las
+// funciones por-primitivo wini_list_*_{i64,f64,i1,str}.
+func esElementoGenerico(t Tipo) bool {
+	switch t.(type) {
+	case *TipoLista, *TipoEstructura:
+		return true
+	}
+	return false
+}
+
+// codigoElemento devuelve el 'tipo' a pasar a wini_liberar_lista /
+// wini_print_list / wini_list_concat para una lista con elementos 't':
+// 0..3 para los primitivos, tipoCodeGenerico para listas/estructuras, y -1
+// si el elemento no es soportado. (tipoCode, en cambio, sigue siendo solo
+// para primitivos: lo usan los diccionarios.)
+func codigoElemento(t Tipo) int {
+	if code := tipoCode(t); code != -1 {
+		return code
+	}
+	if esElementoGenerico(t) {
+		return tipoCodeGenerico
+	}
+	return -1
+}
+
+// puedeImprimirLista indica si 'escribir' sabe imprimir esta lista: sus
+// elementos son primitivos, o listas que a su vez se pueden imprimir. Las
+// estructuras (en cualquier nivel) no tienen impresión definida.
+func puedeImprimirLista(l *TipoLista) bool {
+	switch e := l.Elemento.(type) {
+	case *TipoPrimitivo:
+		return true
+	case *TipoLista:
+		return puedeImprimirLista(e)
+	}
+	return false
+}
+
+// poseeReferencias indica si un valor de tipo 't' contiene referencias
+// heap que hay que retener/liberar al copiarlo o descartarlo: es un valor
+// heap (cadena/lista/diccionario) o una estructura con algún campo así.
+// Distinto de esTipoHeap, que además decide cosas como "se libera solo al
+// retornar": una estructura NO es heap (se pasa por valor), pero sus
+// campos heap sí cuentan referencias.
+func poseeReferencias(t Tipo) bool {
+	if st, ok := t.(*TipoEstructura); ok {
+		for _, f := range st.Campos {
+			if poseeReferencias(f.Tipo) {
+				return true
+			}
+		}
+		return false
+	}
+	return esTipoHeap(t)
+}
+
+// emitirRetenerEnValor retiene, una vez, CADA referencia heap contenida en
+// el valor 'ref' de tipo 't' (si 't' es una estructura, recorre sus campos
+// recursivamente; si es heap, lo retiene; si no, no hace nada).
+func (c *Codegen) emitirRetenerEnValor(ref value.Value, t Tipo) {
+	if st, ok := t.(*TipoEstructura); ok {
+		for i, f := range st.Campos {
+			if !poseeReferencias(f.Tipo) {
+				continue
+			}
+			campo := c.currentBlock.NewExtractValue(ref, uint64(i))
+			c.emitirRetenerEnValor(campo, f.Tipo)
+		}
+		return
+	}
+	if esTipoHeap(t) {
+		c.emitirRetenerValor(ref, t)
+	}
+}
+
+// emitirLiberarEnValor es la contraparte de emitirRetenerEnValor: libera
+// UNA referencia de cada valor heap contenido en 'ref'.
+func (c *Codegen) emitirLiberarEnValor(ref value.Value, t Tipo) {
+	if st, ok := t.(*TipoEstructura); ok {
+		for i, f := range st.Campos {
+			if !poseeReferencias(f.Tipo) {
+				continue
+			}
+			campo := c.currentBlock.NewExtractValue(ref, uint64(i))
+			c.emitirLiberarEnValor(campo, f.Tipo)
+		}
+		return
+	}
+	c.emitirLiberarValor(ref, t)
+}
+
+// retenerParaAlmacenar prepara 'v' para guardarlo en una ubicación que
+// pasa a ser su dueña (variable, campo, elemento de lista, campo de una
+// construcción). Para valores heap es retenerSiCompartido. Para una
+// estructura con referencias que viene de otra ubicación (variable, campo,
+// elemento de lista: compartido == true) retiene TODAS las referencias que
+// contiene, así la nueva ubicación tiene las suyas; una estructura recién
+// construida (constructor) ya trae las propias y se adopta tal cual.
+func (c *Codegen) retenerParaAlmacenar(v cgValue) cgValue {
+	if st, ok := v.tip.(*TipoEstructura); ok {
+		if v.compartido && poseeReferencias(st) {
+			c.emitirRetenerEnValor(v.ref, st)
+			v.compartido = false
+		}
+		return v
+	}
+	return c.retenerSiCompartido(v)
+}
+
+// esLocalPropio indica si 'nombre' es una variable local de la función
+// actual que ES DUEÑA de lo que contiene: ni un parámetro (el llamador
+// solo se lo presta) ni la variable de un 'para' (alias de un elemento de
+// la lista). Solo de esas se puede "transferir" el contenido al retornar.
+func (c *Codegen) esLocalPropio(nombre string) bool {
+	if c.funcionActualNodo != nil && len(c.funcionActualNodo.Hijos) > 0 {
+		for _, p := range c.funcionActualNodo.Hijos[0].Hijos {
+			if pn, _ := p.Valor.(string); pn == nombre {
+				return false
+			}
+		}
+	}
+	for _, lp := range c.loops {
+		if lp.nombreVar == nombre {
+			return false
+		}
+	}
+	_, ok := c.lookupVar(nombre)
+	return ok
+}
+
+// esLaMismaVariable indica si el nombre resuelve al MISMO alloca que una
+// variable de iteración de un 'para' activo.
+//
+// No alcanza con comparar los nombres: con shadowing
+// ('para x en a: para x en b: ...') varios 'para' pueden usar el mismo
+// nombre y refers a variables DISTINTAS. Lo que las distingue es la
+// ranura de memoria (el alloca). Se usa para decidir a qué limpieza de
+// iteración hay que saltarse: solo la del loop cuya variable es
+// exactamente el valor devuelto por el 'retornar'.
+func (c *Codegen) esLaMismaVariable(nombre, nombreLoop string) bool {
+	if nombre == "" || nombreLoop == "" {
+		return false
+	}
+	if nombre != nombreLoop {
+		return false
+	}
+	// lookupVar recorre los ámbitos de adentro hacia afuera, así que
+	// devuelve el shadowing más interno: el 'para' activo más interno que
+	// declara ese nombre, que es justo el que buscamos (es el loop del que
+	// estamos saliendo).
+	variable, ok := c.lookupVar(nombre)
+	if !ok {
+		return false
+	}
+	for _, lp := range c.loops {
+		if lp.nombreVar != nombreLoop {
+			continue
+		}
+		// Coinciden si comparten la misma ranura. lp.varPtr es nil para
+		// bucles sin limpieza asociada, y en ese caso no hay nada que
+		// saltarse, así que tampoco se puede estar devolviendo su
+		// variable.
+		if lp.varPtr != nil && lp.varPtr == variable.ptr {
+			return true
+		}
+	}
+	return false
+}
+
+// tamanoDeTipo devuelve el sizeof de un tipo LLVM como constante i64, usando
+// el truco clásico ptrtoint(gep(null, 1)): así el tamaño lo calcula el
+// propio LLVM con el layout real de la plataforma (padding incluido) y
+// coincide con el stride del arreglo que arma el codegen.
+func tamanoDeTipo(t types.Type) constant.Constant {
+	gep := constant.NewGetElementPtr(t, constant.NewNull(types.NewPointer(t)), constant.NewInt(types.I32, 1))
+	return constant.NewPtrToInt(gep, types.I64)
+}
+
+// thunkEstructura emite (una vez por estructura y modo) la función
+// 'void(i8* slot)' que retiene o libera todas las referencias heap de un
+// valor de estructura almacenado en 'slot'. El runtime la llama desde el
+// descriptor de una lista de esa estructura.
+func (c *Codegen) thunkEstructura(st *TipoEstructura, retener bool) *ir.Func {
+	modo := "liberar"
+	if retener {
+		modo = "retener"
+	}
+	clave := st.Nombre + "/" + modo
+	if f, ok := c.thunks[clave]; ok {
+		return f
+	}
+	i8p := types.NewPointer(types.I8)
+	f := c.module.NewFunc("wini.thunk."+st.Nombre+"."+modo, types.Void, ir.NewParam("slot", i8p))
+	c.thunks[clave] = f
+
+	// Los helpers de retener/liberar emiten sobre c.currentBlock: se
+	// apunta al bloque del thunk y se restaura al terminar, porque esto
+	// puede dispararse en medio de la emisión de otra función.
+	previo := c.currentBlock
+	bloque := f.NewBlock("entry")
+	c.currentBlock = bloque
+	tipado := bloque.NewBitCast(f.Params[0], types.NewPointer(c.llvmType(st)))
+	valor := bloque.NewLoad(c.llvmType(st), tipado)
+	if retener {
+		c.emitirRetenerEnValor(valor, st)
+	} else {
+		c.emitirLiberarEnValor(valor, st)
+	}
+	c.currentBlock.NewRet(nil)
+	c.currentBlock = previo
+	return f
+}
+
+// descriptorElemento devuelve (emitiéndola la primera vez) la constante
+// global WiniElemDesc para listas cuyo elemento es 'elem', ya casteada a
+// i8* para pasársela al runtime. El layout TIENE que coincidir con el
+// typedef WiniElemDesc de runtime.h: { i64 size, i32 kind, i32 sub,
+// void(i8*)* retener, void(i8*)* liberar }.
+func (c *Codegen) descriptorElemento(elem Tipo) (constant.Constant, error) {
+	clave := elem.String()
+	if d, ok := c.descriptores[clave]; ok {
+		return d, nil
+	}
+	i8p := types.NewPointer(types.I8)
+	thunkTy := types.NewPointer(types.NewFunc(types.Void, i8p))
+	descTy := types.NewStruct(types.I64, types.I32, types.I32, thunkTy, thunkTy)
+
+	var kind, sub int64
+	var retener, liberar constant.Constant = constant.NewNull(thunkTy), constant.NewNull(thunkTy)
+	switch tt := elem.(type) {
+	case *TipoLista:
+		kind = 1 // WINI_ELEM_LISTA: el runtime retiene/libera el WiniList* por sí solo
+		code := codigoElemento(tt.Elemento)
+		if code == -1 {
+			return nil, fmt.Errorf("tipo de elemento no soportado para lista: %s", tt.Elemento)
+		}
+		sub = int64(code)
+	case *TipoEstructura:
+		kind = 2 // WINI_ELEM_OPACO: retener/liberar vía thunks (solo si hay referencias)
+		if poseeReferencias(tt) {
+			retener = c.thunkEstructura(tt, true)
+			liberar = c.thunkEstructura(tt, false)
+		}
+	default:
+		return nil, fmt.Errorf("tipo de elemento no soportado para lista: %s", elem)
+	}
+
+	g := c.module.NewGlobalDef(fmt.Sprintf("wini.desc.%d", len(c.descriptores)),
+		constant.NewStruct(descTy,
+			tamanoDeTipo(c.llvmType(elem)),
+			constant.NewInt(types.I32, kind),
+			constant.NewInt(types.I32, sub),
+			retener, liberar))
+	g.Immutable = true
+	d := constant.NewBitCast(g, i8p)
+	c.descriptores[clave] = d
+	return d, nil
+}
+
+// cargarSlot emite la lectura de un elemento de una lista genérica:
+// pide el puntero al slot (con chequeo de rango, IndexError capturable) y
+// carga el valor tipado desde ahí. No retiene nada: el elemento sigue
+// siendo de la lista.
+func (c *Codegen) cargarSlot(listPtr, idx value.Value, elem Tipo, linea value.Value) value.Value {
+	slot := c.currentBlock.NewCall(c.rtListSlot, listPtr, idx, linea)
+	tipado := c.currentBlock.NewBitCast(slot, types.NewPointer(c.llvmType(elem)))
+	return c.currentBlock.NewLoad(c.llvmType(elem), tipado)
 }
 
 // parseInterpolatedString descompone un texto de cadena interpolada (sin comillas)
@@ -697,14 +1374,21 @@ func (c *Codegen) Generate(raiz *Nodo) (string, error) {
 			nombre, _ := n.Valor.(string)
 			t := c.estructuras[nombre]
 			for _, f := range n.Hijos[0].Hijos {
-				t.Campos = append(t.Campos, CampoEstructura{f.Valor.(string), c.resolverAnotacion(f.Hijos[0])})
+				// Comprobado, no asumido: Generate no tiene recover(), así
+				// que una aserción desnuda que falle mata el compilador en
+				// vez de devolver un error.
+				nombreCampo, ok := f.Valor.(string)
+				if !ok {
+					return "", fmt.Errorf("línea %d: el campo de la estructura '%s' no tiene nombre", f.Linea, nombre)
+				}
+				t.Campos = append(t.Campos, CampoEstructura{nombreCampo, c.resolverAnotacion(f.Hijos[0])})
 			}
 		}
 	}
 	for _, n := range raiz.Hijos {
 		if n.Tipo == "FUNCION" || n.Tipo == "EXTERNA" {
 			nombre, _ := n.Valor.(string)
-			c.funciones[nombre] = construirFirma(n)
+			c.funciones[nombre] = c.construirFirma(n)
 		}
 
 	}
@@ -756,21 +1440,34 @@ func (c *Codegen) Generate(raiz *Nodo) (string, error) {
 				return "", fmt.Errorf("línea %d: la función externa '%s' no puede tener parámetros con valor por defecto", n.Linea, nombre)
 			}
 			simboloC, _ := n.Hijos[2].Valor.(string)
-			fn := c.module.NewFunc(simboloC, c.llvmType(firma.Retorno), params...)
-			if firma.VariadicoC {
-				// Marca la firma LLVM como variádica de verdad ('...' al
-				// final): así se imprime como 'declare ... (tipos, ...)' y
-				// admite recibir en la llamada argumentos extra sin
-				// parámetro formal correspondiente, cada uno impreso con
-				// su propio tipo (igual que cualquier llamada real a
-				// printf en C).
-				fn.Sig.Variadic = true
+			// BUG-FIX(redefinición): si el símbolo C coincide con una función
+			// que ya está declarada en el módulo (típicamente una del
+			// runtime, como 'wini_string_len'), antes se creaba una SEGUNDA
+			// declaración del mismo nombre: el .ll quedaba con dos 'declare'
+			// del mismo símbolo y clang lo rechazaba con "invalid redefinition
+			// of function". Si la firma es idéntica, reutilizamos la
+			// declaración existente (así 'externa "wini_string_len" como
+			// largo(s: cadena): entero' funciona y 'largo' llama al runtime);
+			// si difiere, damos un error claro en vez de IR inválido.
+			sigDeseada := firmaLLVM(c.llvmType(firma.Retorno), params, firma.VariadicoC)
+			if existente := c.buscarFuncion(simboloC); existente != nil {
+				if existente.Sig.String() != sigDeseada.String() {
+					return "", fmt.Errorf("línea %d: el símbolo C '%s' de la función externa '%s' ya está declarado con una firma distinta (no se puede redeclarar; revisá los tipos de los parámetros o elegí otro símbolo)", n.Linea, simboloC, nombre)
+				}
+				c.llvmFuncs[nombre] = existente
+				continue
 			}
+			fn := c.module.NewFunc(simboloC, c.llvmType(firma.Retorno), params...)
+			fn.Sig.Variadic = sigDeseada.Variadic
 			c.llvmFuncs[nombre] = fn
 			continue
 		}
 
-		fn := c.module.NewFunc(c.safeName(nombre), c.llvmType(firma.Retorno), params...)
+		simboloWini := c.safeName(nombre)
+		if c.buscarFuncion(simboloWini) != nil {
+			return "", fmt.Errorf("línea %d: la función '%s' usa un nombre reservado por el runtime de Wini; elegí otro nombre", n.Linea, nombre)
+		}
+		fn := c.module.NewFunc(simboloWini, c.llvmType(firma.Retorno), params...)
 		c.llvmFuncs[nombre] = fn
 	}
 
@@ -831,12 +1528,17 @@ func (c *Codegen) Generate(raiz *Nodo) (string, error) {
 }
 
 func (c *Codegen) resolverAnotacion(n *Nodo) Tipo {
-	if nombre, ok := n.Valor.(string); ok {
-		if t, found := c.estructuras[nombre]; found {
-			return t
+	return resolverAnotacionCon(n, func(nombre string) (Tipo, bool) {
+		t, ok := c.estructuras[nombre]
+		if !ok {
+			return nil, false
 		}
-	}
-	return resolverAnotacion(n)
+		return t, true
+	})
+}
+
+func (c *Codegen) construirFirma(nodoFuncion *Nodo) *TipoFuncion {
+	return construirFirmaConResolutor(nodoFuncion, c.resolverAnotacion)
 }
 
 func (c *Codegen) emitirFuncion(n *Nodo) error {
@@ -855,6 +1557,18 @@ func (c *Codegen) emitirFuncion(n *Nodo) error {
 	c.loops = nil
 	c.pushScope()
 
+	// Bloque de inicialización: corre una sola vez al entrar, antes que
+	// todo lo demás, y nunca contiene un 'setjmp'. Todo lo que debe
+	// ejecutarse una sola vez por invocación (allocas, stores iniciales,
+	// registros de raíces, fid/base) se emite acá y NO en entryBlock:
+	// entryBlock sí puede alojar un 'setjmp' (si la primera sentencia es
+	// un 'intentar'), y todo lo anexado después de ese 'setjmp' se
+	// re-ejecutaría en cada aterrizaje de longjmp (anularía locales vivas
+	// y duplicaría raíces). Se termina con el salto a 'entry' al final
+	// de emitirFuncion, cuando ya se anexó todo. Va primero en layout
+	// porque la ejecución arranca en el primer bloque.
+	init := fn.NewBlock("init")
+	c.initBlock = init
 	entry := fn.NewBlock("entry")
 	c.entryBlock = entry
 	c.currentBlock = entry
@@ -862,14 +1576,41 @@ func (c *Codegen) emitirFuncion(n *Nodo) error {
 	c.parametrosHeapActuales = nil
 	c.tryFrames = nil
 	c.finallyEnCursoDe = nil
+	// Base de raíces de esta invocación: todo lo que se registre de acá
+	// en más pertenece a esta función y se poda al retornar (ver
+	// podarRaicesAlRetornar en los tres caminos de 'ret').
+	baseRaices := c.initBlock.NewCall(c.rtRaicesProfundidad)
+	basePtr := c.initBlock.NewAlloca(types.I64)
+	c.initBlock.NewStore(baseRaices, basePtr)
+	c.raizBasePtr = basePtr
+	// Fid de esta invocación (ver wini_invocacion_nueva): identifica las
+	// raíces propias y los frames que empuje.
+	fidRaices := c.initBlock.NewCall(c.rtInvocacionNueva)
+	fidPtr := c.initBlock.NewAlloca(types.I64)
+	c.initBlock.NewStore(fidRaices, fidPtr)
+	c.raizFidPtr = fidPtr
+	// Sin regiones de 'try' activas al entrar (cada 'intentar' apila la
+	// suya al compilarse y la desapila al terminar).
+	c.regionesTry = nil
 
 	for i, p := range paramsNodo.Hijos {
 		nombreParam, _ := p.Valor.(string)
 		tipoParam := firma.Parametros[i]
-		ptr := c.entryBlock.NewAlloca(c.llvmType(tipoParam))
-		c.entryBlock.NewStore(fn.Params[i], ptr)
+		ptr := c.initBlock.NewAlloca(c.llvmType(tipoParam))
+		c.initBlock.NewStore(fn.Params[i], ptr)
 		c.declareVar(nombreParam, cgVar{ptr: ptr, tip: tipoParam})
-		if esTipoHeap(tipoParam) {
+		// El llamador retuvo una referencia por cada parámetro heap al
+		// pasarlo: si esta función lanza antes de retornarlo/liberarlo,
+		// el desenrollado la devuelve. (Los params con valor por defecto
+		// omitido reciben placeholder NULL: seguro para el desenrollado.)
+		c.registrarRaiz(ptr, tipoParam)
+		// Una estructura no es un valor heap en sí misma (viaja por valor), pero
+		// sus CAMPOS heap sí lo son y quedan en manos de la función al
+		// recibirla. Por eso también entra en la lista: sin esto, un
+		// parámetro de tipo estructura nunca liberaba sus campos al
+		// retornar (fuga) y, peor, el llamador seguía usando los mismos
+		// punteros que el llamado liberaría (use-after-free).
+		if esTipoHeap(tipoParam) || poseeReferencias(tipoParam) {
 			c.parametrosHeapActuales = append(c.parametrosHeapActuales, paramHeap{nombre: nombreParam, ptr: ptr, tip: tipoParam})
 		}
 
@@ -901,7 +1642,7 @@ func (c *Codegen) emitirFuncion(n *Nodo) error {
 			// el parámetro y la fuente original quedan compartiendo el
 			// mismo rc=1 y el primer 'liberar' de cualquiera de los dos
 			// deja al otro con un puntero colgante (use-after-free).
-			defVal = c.retenerSiCompartido(defVal)
+			defVal = c.retenerParaAlmacenar(defVal)
 			c.currentBlock.NewStore(defVal.ref, ptr)
 			c.currentBlock.NewBr(afterBlock)
 
@@ -941,18 +1682,26 @@ func (c *Codegen) emitirFuncion(n *Nodo) error {
 				return err
 			}
 			if c.blockTerminated {
+				// Cerrar init igual que en el camino normal (ver final
+				// de emitirFuncion): el módulo debe quedar válido.
+				c.initBlock.NewBr(entry)
 				return nil
 			}
 			for _, p := range c.parametrosHeapActuales {
 				actual := c.currentBlock.NewLoad(c.llvmType(p.tip), p.ptr)
-				c.emitirLiberarValor(actual, p.tip)
+				c.emitirLiberarEnValor(actual, p.tip)
 			}
+			c.podarRaicesAlRetornar()
 			c.currentBlock.NewRet(nil)
 			c.blockTerminated = true
+			c.initBlock.NewBr(entry)
 			return nil
 		}
 		return fmt.Errorf("la función '%s' puede terminar sin 'retornar'", nombre)
 	}
+	// Cerrar el bloque de inicialización: todo lo anexado durante la
+	// compilación ya está adentro, en orden, y corre una sola vez.
+	c.initBlock.NewBr(entry)
 	return nil
 }
 
@@ -961,7 +1710,7 @@ func (c *Codegen) emitirSentencia(n *Nodo) error {
 	case "ASIGNACION_TIPADA":
 		nombre, _ := n.Valor.(string)
 		tipoDecl := c.resolverAnotacion(n.Hijos[0].Hijos[0])
-		valor, err := c.emitirExpr(n.Hijos[1], nil)
+		valor, err := c.emitirExpr(n.Hijos[1], tipoDecl)
 		if err != nil {
 			return err
 		}
@@ -972,7 +1721,7 @@ func (c *Codegen) emitirSentencia(n *Nodo) error {
 		// (compartido == true), esta nueva variable pasa a ser otro dueño
 		// del mismo valor en el heap: hay que retenerlo, o liberar una de
 		// las dos terminaría dejando a la otra con un puntero colgante.
-		valor = c.retenerSiCompartido(valor)
+		valor = c.retenerParaAlmacenar(valor)
 
 		if existente, ok := c.lookupVarEnScopeActual(nombre); ok {
 			// 'nombre' ya fue declarada en ESTE mismo scope: es el caso de
@@ -989,10 +1738,11 @@ func (c *Codegen) emitirSentencia(n *Nodo) error {
 				return fmt.Errorf("línea %d: '%s' ya fue declarada con otro tipo en este alcance", n.Linea, nombre)
 			}
 			if esTipoHeap(existente.tip) {
+				// Liberación incondicional: arriba hubo un retain (+1) por
+				// el valor compartido, así que esta baja deja rc = 1 para
+				// el único dueño. Ver la nota equivalente en ASIGNACION.
 				anterior := c.currentBlock.NewLoad(c.llvmType(existente.tip), existente.ptr)
-				if anterior != valor.ref {
-					c.emitirLiberarValor(anterior, existente.tip)
-				}
+				c.emitirLiberarValor(anterior, existente.tip)
 			}
 			c.currentBlock.NewStore(valor.ref, existente.ptr)
 			return nil
@@ -1002,9 +1752,22 @@ func (c *Codegen) emitirSentencia(n *Nodo) error {
 		// nuevo. Para tipos heap se inicializa a null antes del store
 		// real, así el alloca nunca queda con basura sin inicializar si
 		// en el futuro algo lo lee o libera antes de este punto.
-		ptr := c.entryBlock.NewAlloca(c.llvmType(tipoDecl))
+		ptr := c.initBlock.NewAlloca(c.llvmType(tipoDecl))
 		if esTipoHeap(tipoDecl) {
 			c.currentBlock.NewStore(constant.NewNull(types.NewPointer(types.I8)), ptr)
+		}
+		// Raíz de excepción (ver registrarRaiz): el bloque de entrada
+		// corre una sola vez, así que el registro también, aunque esta
+		// declaración viva dentro de un bucle. Se inicializa acá mismo a
+		// NULL/cero para que la ranura sea segura desde la entrada de la
+		// función (el store de arriba puede correr mucho después, tras
+		// código que lanza).
+		if esTipoHeap(tipoDecl) {
+			c.initBlock.NewStore(constant.NewNull(types.NewPointer(types.I8)), ptr)
+			c.registrarRaiz(ptr, tipoDecl)
+		} else if st, ok := tipoDecl.(*TipoEstructura); ok && poseeReferencias(st) {
+			c.initBlock.NewStore(constant.NewZeroInitializer(c.llvmType(st)), ptr)
+			c.registrarRaiz(ptr, tipoDecl)
 		}
 		c.currentBlock.NewStore(valor.ref, ptr)
 		c.declareVar(nombre, cgVar{ptr: ptr, tip: tipoDecl})
@@ -1016,25 +1779,103 @@ func (c *Codegen) emitirSentencia(n *Nodo) error {
 		if !ok {
 			return fmt.Errorf("línea %d: variable '%s' no declarada", n.Linea, nombre)
 		}
-		valor, err := c.emitirExpr(n.Hijos[0], nil)
+		valor, err := c.emitirExpr(n.Hijos[0], c.funcionActual.Retorno)
 		if err != nil {
 			return err
 		}
 		if !valor.tip.Igual(variable.tip) {
 			return fmt.Errorf("línea %d: asignación incompatible a '%s'", n.Linea, nombre)
 		}
-		valor = c.retenerSiCompartido(valor)
+		valor = c.retenerParaAlmacenar(valor)
 		if esTipoHeap(variable.tip) {
 			// 'nombre' está a punto de dejar de apuntar a lo que tenía
 			// antes: liberamos esa referencia para no perderla (fuga de
 			// memoria) ahora que reasignar ya no la vuelve inalcanzable
-			// sin más. Comparamos primero para no romper 'a = a'.
+			// sin más.
+			//
+			// La liberación es INCONDICIONAL a propósito, incluso en el
+			// auto-asignamiento 'a = a'. No parece un error: arriba,
+			// retenerParaAlmacenar hizo un retain (+1) porque el valor venía
+			// compartido (era la variable misma). Con rc = 2 tras el
+			// retain, esta liberación baja a 1 y la variable conserva
+			// exactamente una referencia. Si se salteara la liberación
+			// (por ejemplo comparando punteros), quedaría rc = 2 para un
+			// solo dueño y la cadena se fugaría.
 			anterior := c.currentBlock.NewLoad(c.llvmType(variable.tip), variable.ptr)
-			if anterior != valor.ref {
-				c.emitirLiberarValor(anterior, variable.tip)
-			}
+			c.emitirLiberarValor(anterior, variable.tip)
 		}
 		c.currentBlock.NewStore(valor.ref, variable.ptr)
+		return nil
+
+	case "ASIGNACION_CAMPO":
+		// p.campo = expr  /  p.campo += expr (desazucarado). La variable
+		// es un alloca del struct; se calcula el puntero al campo con GEP
+		// y se le asigna, con el mismo manejo de refcount que una
+		// asignación de variable: retener el valor si viene compartido y
+		// liberar la referencia anterior del campo si es heap.
+		//
+		// BUG-FIX: la comparación `anterior != valor.ref` en Go compara
+		// value.Value interfaces (cada NewLoad crea una instrucción LLVM
+		// nueva), NO punteros en runtime, así que nunca era igual. Aquí
+		// eso NO es un problema: la liberación de abajo es incondicional a
+		// propósito. El retain que hizo retenerParaAlmacenar (+1) ya
+		//aternion la referencia del valor nuevo, así que liberar la
+		// anterior (una vez, incluso si es el mismo objeto) deja rc = 1
+		// para el único dueño. Condicionar esa liberación produce una
+		// fuga: 'a = a' dejaría rc = 2 para un solo dueño.
+		baseNodo, campoNodo, valorNodo := n.Hijos[0], n.Hijos[1], n.Hijos[2]
+		nombreBase, _ := baseNodo.Valor.(string)
+		nombreCampo, _ := campoNodo.Valor.(string)
+		variable, ok := c.lookupVar(nombreBase)
+		if !ok {
+			return fmt.Errorf("línea %d: variable '%s' no declarada", n.Linea, nombreBase)
+		}
+		s, ok := variable.tip.(*TipoEstructura)
+		if !ok {
+			return fmt.Errorf("línea %d: '%s' no es una estructura", n.Linea, nombreBase)
+		}
+		_, idx, ok := s.Campo(nombreCampo)
+		if !ok {
+			return fmt.Errorf("línea %d: la estructura '%s' no tiene el campo '%s'", n.Linea, s.Nombre, nombreCampo)
+		}
+		tipoCampo := s.Campos[idx].Tipo
+		valor, err := c.emitirExpr(valorNodo, tipoCampo)
+		if err != nil {
+			return err
+		}
+		if !valor.tip.Igual(tipoCampo) {
+			return fmt.Errorf("línea %d: asignación incompatible al campo '%s' de '%s'", n.Linea, nombreCampo, nombreBase)
+		}
+		valor = c.retenerParaAlmacenar(valor)
+		structPtr := variable.ptr
+		fieldPtr := c.currentBlock.NewGetElementPtr(c.llvmType(s), structPtr,
+			constant.NewInt(types.I32, 0), constant.NewInt(types.I32, int64(idx)))
+		if esTipoHeap(tipoCampo) {
+			// Cargar el puntero anterior del campo PARA COMPARAR en runtime
+			// con el nuevo valor (no para liberar inmediatamente).
+			anteriorLoad := c.currentBlock.NewLoad(c.llvmType(tipoCampo), fieldPtr)
+			// Comparar en runtime si anterior == valor.ref.
+			// Los hilos que construyeron `anteriorLoad` y `valor.ref`
+			// pueden ser diferentes instrucciones LLVM, pero si apuntan
+			// al mismo objeto en runtime, no debemos liberar.
+			esIgual := c.currentBlock.NewICmp(enum.IPredEQ, anteriorLoad, valor.ref)
+			// Crear bloques condicionales para liberar solo `anterior`
+			// si es diferente de `valor.ref`.
+			noLiberar := c.currentFunc.NewBlock(c.newLabel("acampo.no_liberar"))
+			liberar := c.currentFunc.NewBlock(c.newLabel("acampo.liberar"))
+			despues := c.currentFunc.NewBlock(c.newLabel("acampo.despues"))
+			c.currentBlock.NewCondBr(esIgual, noLiberar, liberar)
+			// --- bloque: no liberar ---
+			c.currentBlock = noLiberar
+			c.currentBlock.NewBr(despues)
+			// --- bloque: liberar ---
+			c.currentBlock = liberar
+			c.emitirLiberarValor(anteriorLoad, tipoCampo)
+			c.currentBlock.NewBr(despues)
+			// --- bloque: después ---
+			c.currentBlock = despues
+		}
+		c.currentBlock.NewStore(valor.ref, fieldPtr)
 		return nil
 
 	case "ASIGNACION_INDEX":
@@ -1065,9 +1906,23 @@ func (c *Codegen) emitirSentencia(n *Nodo) error {
 			// espera que el valor que llega ya sea "suyo": si 'val' viene
 			// de otra variable/lectura (compartido), lo retenemos antes
 			// de guardarlo, para que la lista cuente como un dueño más.
-			val = c.retenerSiCompartido(val)
+			val = c.retenerParaAlmacenar(val)
 			listPtr := c.currentBlock.NewBitCast(contenedorVal, types.NewPointer(types.I8))
 			linea := constant.NewInt(types.I64, int64(n.Linea))
+			if esElementoGenerico(cont.Elemento) {
+				// Lista de listas / de estructuras: el valor se pasa por
+				// puntero a un temporal (el runtime copia desc->size bytes
+				// y adopta las referencias que contiene).
+				desc, err := c.descriptorElemento(cont.Elemento)
+				if err != nil {
+					return fmt.Errorf("línea %d: %v", n.Linea, err)
+				}
+				tmp := c.initBlock.NewAlloca(c.llvmType(cont.Elemento))
+				c.currentBlock.NewStore(val.ref, tmp)
+				valPtr := c.currentBlock.NewBitCast(tmp, types.NewPointer(types.I8))
+				c.currentBlock.NewCall(c.rtListSetGen, listPtr, idx.ref, valPtr, desc, linea)
+				return nil
+			}
 			switch {
 			case cont.Elemento.Igual(TipoEntero):
 				c.currentBlock.NewCall(c.rtListSetI64, listPtr, idx.ref, val.ref, linea)
@@ -1098,6 +1953,31 @@ func (c *Codegen) emitirSentencia(n *Nodo) error {
 				return fmt.Errorf("línea %d: el valor asignado no coincide con el tipo de valor del diccionario", n.Linea)
 			}
 			kSuf, _, ok1 := primSuffix(cont.Clave)
+			if !ok1 {
+				return fmt.Errorf("línea %d: tipo de clave de diccionario no soportado en codegen", n.Linea)
+			}
+			// Valor genérico (lista o estructura): descriptor + set_gen.
+			// El runtime adopta el valor (y libera el pisado): retener
+			// antes si venía de otra ubicación; las estructuras por valor
+			// necesitan dirección.
+			if esElementoGenerico(cont.Valor) {
+				desc, err := c.descriptorElemento(cont.Valor)
+				if err != nil {
+					return fmt.Errorf("línea %d: %v", n.Linea, err)
+				}
+				setFn, ok := c.rtDictSetGen[kSuf]
+				if !ok {
+					return fmt.Errorf("línea %d: combinación de tipos de diccionario (%s, genérico) no soportada", n.Linea, kSuf)
+				}
+				val = c.retenerParaAlmacenar(val)
+				tmpVal := c.initBlock.NewAlloca(c.llvmType(cont.Valor))
+				c.currentBlock.NewStore(val.ref, tmpVal)
+				valPtr := c.currentBlock.NewBitCast(tmpVal, types.NewPointer(types.I8))
+				dictPtr := c.currentBlock.NewBitCast(contenedorVal, types.NewPointer(types.I8))
+				idx = c.retenerSiCompartido(idx)
+				c.currentBlock.NewCall(setFn, dictPtr, idx.ref, valPtr, desc)
+				return nil
+			}
 			vSuf, _, ok2 := primSuffix(cont.Valor)
 			if !ok1 || !ok2 {
 				return fmt.Errorf("línea %d: tipo de clave/valor de diccionario no soportado en codegen", n.Linea)
@@ -1143,19 +2023,37 @@ func (c *Codegen) emitirSentencia(n *Nodo) error {
 			}
 			for _, p := range c.parametrosHeapActuales {
 				actual := c.currentBlock.NewLoad(c.llvmType(p.tip), p.ptr)
-				c.emitirLiberarValor(actual, p.tip)
+				c.emitirLiberarEnValor(actual, p.tip)
 			}
+			c.podarRaicesAlRetornar()
 			c.currentBlock.NewRet(nil)
 			c.blockTerminated = true
 			return nil
 		}
-		valor, err := c.emitirExpr(n.Hijos[0], nil)
+		valor, err := c.emitirExpr(n.Hijos[0], c.funcionActual.Retorno)
 		if err != nil {
 			return err
 		}
 		nombreDevueltoDirecto := ""
 		if n.Hijos[0].Tipo == "IDENTIFICADOR" {
 			nombreDevueltoDirecto, _ = n.Hijos[0].Valor.(string)
+		}
+		// El valor devuelto debe llegar al llamador con una referencia
+		// PROPIA. Una variable simple la transfiere (ver más abajo); pero
+		// un valor compartido que NO es una variable simple ('retornar
+		// l[0]', 'retornar p.s', 'retornar toks[i]') sigue siendo del
+		// contenedor: sin retenerlo, el llamador lo liberaría y el
+		// contenedor lo volvería a liberar (doble free).
+		if valor.compartido {
+			if st, esEstructura := valor.tip.(*TipoEstructura); esEstructura {
+				// Estructura: solo se transfiere desde un local propio (no
+				// parámetro ni variable de 'para'); el resto se retiene.
+				if poseeReferencias(st) && !(nombreDevueltoDirecto != "" && c.esLocalPropio(nombreDevueltoDirecto)) {
+					c.emitirRetenerEnValor(valor.ref, st)
+				}
+			} else if nombreDevueltoDirecto == "" {
+				valor = c.retenerSiCompartido(valor)
+			}
 		}
 		// 'retornar' puede estar saliendo desde dentro de uno o más
 		// 'para' anidados, sin pasar por sus bloques de incremento ni por
@@ -1167,7 +2065,15 @@ func (c *Codegen) emitirSentencia(n *Nodo) error {
 		// colgante justo antes de devolverla.
 		for i := len(c.loops) - 1; i >= 0; i-- {
 			lp := c.loops[i]
-			if lp.limpiezaIter != nil && lp.nombreVar != nombreDevueltoDirecto {
+			// Antes se comparaba lp.nombreVar con el nombre devuelto, lo
+			// que falla con shadowing: en 'para x en a: para x en b:
+			// retornar x', los DOS loops tienen variable 'x', así que los
+			// dos se saltaban la limpieza y el 'x' del loop externo
+			// fugaba en cada vuelta. Ahora se compara la IDENTIDAD de la
+			// variable (el puntero a su alloca): solo se saltaba la
+			// limpieza del loop cuya variable es exactamente el valor que
+			// se está devolviendo.
+			if lp.limpiezaIter != nil && !c.esLaMismaVariable(lp.nombreVar, nombreDevueltoDirecto) {
 				lp.limpiezaIter()
 			}
 			if lp.limpiezaListaTemporal != nil {
@@ -1204,8 +2110,9 @@ func (c *Codegen) emitirSentencia(n *Nodo) error {
 				continue
 			}
 			actual := c.currentBlock.NewLoad(c.llvmType(p.tip), p.ptr)
-			c.emitirLiberarValor(actual, p.tip)
+			c.emitirLiberarEnValor(actual, p.tip)
 		}
+		c.podarRaicesAlRetornar()
 		c.currentBlock.NewRet(valor.ref)
 		c.blockTerminated = true
 		return nil
@@ -1217,10 +2124,25 @@ func (c *Codegen) emitirSentencia(n *Nodo) error {
 		}
 		// El resultado de una llamada usada como sentencia suelta (su
 		// valor no se guarda en ninguna variable ni se le hace nada más)
-		// es un valor recién construido que nadie más va a liberar: si es
-		// de tipo heap, lo liberamos aquí mismo para no dejarlo fugado.
-		if esTipoHeap(v.tip) {
-			c.emitirLiberarValor(v.ref, v.tip)
+		// es un valor recién construido que nadie más va a liberar: hay
+		// que devolver sus referencias aquí mismo para no dejarlo fugado.
+		//
+		// Se usa 'poseeReferencias' y no 'esTipoHeap' porque una estructura
+		// no es un valor heap por sí misma (viaja por valor) pero SÍ tiene
+		// referencias propias en sus campos: 'crear().s = ...' descartado
+		// como sentencia fugaba la cadena de la estructura recién creada
+		// (confirmado con LeakSanitizer). emitirLiberarEnValor recorre los
+		// campos; para tipos primitivos no hace nada.
+		//
+		// EXCEPCIÓN (no liberar): si el resultado es un alias de algo que
+		// ya tiene dueño ('compartido'), liberarlo sería quitarle una
+		// referencia que no nos pertenece. Es el caso de los builtins que
+		// mutan o aliasan: 'agregar'/'insertar'/'quitar' devuelven la
+		// misma lista que recibieron, y 'primero'/'ultimo' el elemento de
+		// la lista. Antes todos los builtins devolvían valores frescos y
+		// liberar incondicional era correcto.
+		if !v.compartido {
+			c.emitirLiberarEnValor(v.ref, v.tip)
 		}
 		return nil
 
@@ -1406,12 +2328,34 @@ func (c *Codegen) emitirLanzar(n *Nodo) error {
 		tipoError = "RuntimeError"
 	}
 
+	// BUG-FIX(fuga): los 'finalmente' de los frames ya resueltos se corren
+	// ACÁ, ANTES de construir el mensaje. Antes se construía primero el
+	// mensaje (un wini_string_new si no se dio uno, o la evaluación de la
+	// expresión) y recién después se corrían esos 'finalmente': si uno de
+	// ellos terminaba el camino por su cuenta ('retornar', 'romper',
+	// 'lanzar', ...), este 'lanzar' quedaba abandonado y el mensaje ya
+	// construido nunca llegaba a 'wini_lanzar' (que es quien toma posesión
+	// de esa referencia) — un wini_string_new fugado por cada 'lanzar'
+	// dentro de un 'intentar' cuyo 'finalmente' sale temprano. Corriendo los
+	// 'finalmente' primero, si terminan ya no construimos nada.
+	if err := c.finallyDeFramesResueltos(); err != nil {
+		return err
+	}
+	if c.blockTerminated {
+		return nil
+	}
+
 	var mensajeVal cgValue
 	if len(mensajeNodo.Hijos) > 0 {
 		v, err := c.emitirExpr(mensajeNodo.Hijos[0], TipoCadena)
 		if err != nil {
 			return err
 		}
+		// Si el mensaje se construyó pero el 'lanzar' no llega a ejecutar
+		// (porque la expresión del mensaje terminó el flujo por su cuenta,
+		// o porque el código de abajo ya no está en un bloque vivo), esa
+		// referencia se pierde. wini_lanzar es el que normalmente toma
+		// posesión de ella; si no se le entrega, hay que devolverla acá.
 		if !v.tip.Igual(TipoCadena) {
 			return fmt.Errorf("línea %d: el mensaje de 'lanzar' debe ser de tipo cadena, se encontró %s", n.Linea, v.tip)
 		}
@@ -1431,17 +2375,34 @@ func (c *Codegen) emitirLanzar(n *Nodo) error {
 	// (dict/list set, etc.).
 	mensajeVal = c.retenerSiCompartido(mensajeVal)
 
+	// Los parámetros heap de esta función quedan huérfanos: wini_lanzar no
+	// retorna (hace longjmp al 'capturar' correspondiente o termina el
+	// proceso), así que el 'retornar' normal que los liberaría nunca se
+	// ejecuta. Una función variádica recibe su lista como parámetro heap,
+	// así que 'promedio()' que lanzaba por estar vacío fugaba esa lista
+	// entera (confirmado con LeakSanitizer). Se devuelven antes de saltar,
+	// que es el único punto donde todavía somos dueños.
+	for _, p := range c.parametrosHeapActuales {
+		actual := c.currentBlock.NewLoad(c.llvmType(p.tip), p.ptr)
+		c.emitirLiberarEnValor(actual, p.tip)
+		// La ranura sigue registrada como raíz de excepción y ESTE MISMO
+		// 'lanzar' va a desenrollar: sin anularla, el desenrollado la
+		// liberaría otra vez (doble free). 'retornar' no necesita esto
+		// porque poda las raíces antes de salir.
+		if st, ok := p.tip.(*TipoEstructura); ok {
+			c.currentBlock.NewStore(constant.NewZeroInitializer(c.llvmType(st)), p.ptr)
+		} else if esTipoHeap(p.tip) {
+			c.currentBlock.NewStore(constant.NewNull(types.NewPointer(types.I8)), p.ptr)
+		}
+	}
+	// Temporales de expresiones a medio calcular (el 'result' de una
+	// cadena interpolada que todavía no terminó, etc).
+	c.liberarTemporalesEnCurso()
+
 	tipoGlobal := c.internString(tipoError)
 	tipoArrType := tipoGlobal.ContentType.(*types.ArrayType)
 	tipoGep := c.currentBlock.NewGetElementPtr(tipoArrType, tipoGlobal,
 		constant.NewInt(types.I64, 0), constant.NewInt(types.I64, 0))
-
-	if err := c.finallyDeFramesResueltos(); err != nil {
-		return err
-	}
-	if c.blockTerminated {
-		return nil
-	}
 
 	c.currentBlock.NewCall(c.rtLanzar, tipoGep, mensajeVal.ref, constant.NewInt(types.I64, int64(n.Linea)))
 	// 'wini_lanzar' nunca retorna (longjmp o exit()); LLVM exige que todo
@@ -1494,9 +2455,11 @@ func (c *Codegen) finallyDeFramesResueltos() error {
 // loopLabels.tryFramesAlEntrar), y desde el propio final del cuerpo de
 // un 'intentar' para su caso general (ver emitirIntentar).
 func (c *Codegen) desapilarTryFrames(nivelObjetivo int) error {
+	popped := 0
 	for len(c.tryFrames) > nivelObjetivo {
 		frame := c.tryFrames[len(c.tryFrames)-1]
 		c.tryFrames = c.tryFrames[:len(c.tryFrames)-1]
+		popped++
 		if frame.runtimeActivo {
 			c.currentBlock.NewCall(c.rtTryPop)
 		}
@@ -1518,6 +2481,21 @@ func (c *Codegen) desapilarTryFrames(nivelObjetivo int) error {
 		if c.blockTerminated {
 			return nil
 		}
+	}
+	// BUG-FIX(fuga): al salir de un 'capturar' de forma temprana
+	// ('retornar'/'romper'/'continuar') el codegen antes NO liberaba la
+	// referencia auxiliar que el runtime guarda al hacer
+	// wini_excepcion_tomar_mensaje (ver runtime.h): solo el final normal
+	// del cuerpo del catch llamaba a wini_excepcion_descartar, así que esa
+	// referencia quedaba viva para siempre (una fuga por cada catch
+	// abandonado). Si desapilamos al menos un frame de 'intentar' estamos
+	// abandonando todo lo que ese frame cubría —incluida cualquier
+	// excepción capturada— y hay que descartarla. Si no se desapiló
+	// ninguno (p. ej. un 'romper' de un bucle que vive DENTRO del propio
+	// catch), el catch sigue en curso y su 'descartar' normal se encarga.
+	// La llamada es idempotente y segura aunque no haya nada reservado.
+	if popped > 0 && !c.blockTerminated {
+		c.currentBlock.NewCall(c.rtExcepcionDescartar)
 	}
 	return nil
 }
@@ -1673,7 +2651,11 @@ func (c *Codegen) emitirIntentar(n *Nodo) error {
 	// --- Empujar el frame y hacer 'setjmp' directamente aquí: solo es
 	// válido en el stack frame que lo invoca, así que no puede
 	// envolverse en una función del runtime. ---
-	bufPtr := c.currentBlock.NewCall(c.rtTryPush)
+	var fidTry value.Value = constant.NewInt(types.I64, 0)
+	if c.raizFidPtr != nil {
+		fidTry = c.currentBlock.NewLoad(types.I64, c.raizFidPtr)
+	}
+	bufPtr := c.currentBlock.NewCall(c.rtTryPush, fidTry)
 	setjmpVal := c.currentBlock.NewCall(c.rtSetjmp, bufPtr)
 	// El frame se empuja UNA sola vez y se mantiene en c.tryFrames durante
 	// TODO el resto de esta función (cuerpo del try y cada 'capturar'):
@@ -1685,6 +2667,17 @@ func (c *Codegen) emitirIntentar(n *Nodo) error {
 	c.tryFrames = append(c.tryFrames, frame)
 	cond := c.currentBlock.NewICmp(enum.IPredNE, setjmpVal, constant.NewInt(types.I32, 0))
 	c.currentBlock.NewCondBr(cond, catchDispatch, tryBodyBlock)
+
+	// Región abandonable de este 'try': cada ranura registrada mientras
+	// se compila su cuerpo, sus 'capturar' o su 'finalmente' se anota acá
+	// (además de en las regiones exteriores). Al aterrizar en el despacho
+	// (solo se llega vía longjmp), el cuerpo quedó abandonado y sus
+	// ranuras se liberan y anulan (ver gancho más abajo). Se desapila al
+	// terminar de compilar este 'intentar'.
+	c.regionesTry = append(c.regionesTry, nil)
+	defer func() {
+		c.regionesTry = c.regionesTry[:len(c.regionesTry)-1]
+	}()
 
 	// --- Cuerpo del try ---
 	c.currentBlock = tryBodyBlock
@@ -1726,6 +2719,16 @@ func (c *Codegen) emitirIntentar(n *Nodo) error {
 	c.currentBlock = catchDispatch
 	c.blockTerminated = false
 	c.currentBlock.NewCall(c.rtTryPopSaltado)
+	// Gancho de región: el cuerpo quedó abandonado por el salto (sus
+	// variables no van a liberarse por el camino normal). Se liberan y
+	// anulan sus ranuras; es idempotente (lo ya liberado a mano está en
+	// NULL) y no toca las regiones exteriores (siguen vivas: el 'capturar'
+	// puede usar esas variables). Se captura la lista actual porque los
+	// 'capturar' que se compilan después agregan las suyas.
+	if nreg := len(c.regionesTry); nreg > 0 {
+		propia := append([]ranuraRegion(nil), c.regionesTry[nreg-1]...)
+		c.liberarRegion(propia)
+	}
 	// El runtime ya resolvió este frame al saltar acá: si un 'retornar'
 	// dentro de algún 'capturar' de más abajo termina encontrando este
 	// frame vía desapilarTryFrames, no debe volver a pedirle un
@@ -1762,11 +2765,19 @@ func (c *Codegen) emitirIntentar(n *Nodo) error {
 
 		c.currentBlock = catchBody
 		c.pushScope()
+		var varError cgVar
 		if nombreVar != "" {
 			msg := c.currentBlock.NewCall(c.rtExcepcionTomarMensaje)
-			ptr := c.entryBlock.NewAlloca(c.llvmType(TipoCadena))
+			ptr := c.initBlock.NewAlloca(c.llvmType(TipoCadena))
+			// Raíz de excepción: si el cuerpo del 'capturar' lanza antes
+			// de liberar 'e', el desenrollado la devuelve. Se inicializa
+			// en el bloque de entrada (corre una vez) porque el store de
+			// abajo puede no haberse ejecutado todavía.
+			c.initBlock.NewStore(constant.NewNull(types.NewPointer(types.I8)), ptr)
+			c.registrarRaiz(ptr, TipoCadena)
 			c.currentBlock.NewStore(msg, ptr)
 			c.declareVar(nombreVar, cgVar{ptr: ptr, tip: TipoCadena})
+			varError = cgVar{ptr: ptr, tip: TipoCadena}
 		} else {
 			c.currentBlock.NewCall(c.rtExcepcionDescartar)
 		}
@@ -1784,6 +2795,23 @@ func (c *Codegen) emitirIntentar(n *Nodo) error {
 			// (si 'como var' la generó) y saltar al finally con
 			// "no relanzar".
 			c.currentBlock.NewCall(c.rtExcepcionDescartar)
+			// La variable de error ('capturar T como e') guarda el mensaje
+			// capturado con una referencia propia, y la reserva del runtime
+			// ya se descartó. Como es una variable de BLOQUE (solo existe
+			// dentro del 'capturar'), su referencia se devuelve al salir de
+			// acá: si el usuario no la liberó explícitamente, el mensaje se
+			// fugaba una vez por cada excepción capturada (confirmado con
+			// LeakSanitizer). Solo se toca si sigue siendo un valor heap
+			// vivo: si el usuario la liberó, el puntero quedó en NULL y
+			// liberar(NULL) es inocuo.
+			if varError.ptr != nil {
+				actual := c.currentBlock.NewLoad(c.llvmType(varError.tip), varError.ptr)
+				c.emitirLiberarValor(actual, varError.tip)
+				c.currentBlock.NewStore(
+					constant.NewNull(types.NewPointer(types.I8)),
+					varError.ptr,
+				)
+			}
 			c.currentBlock.NewBr(finallyBlock)
 			incomingFinally = append(incomingFinally,
 				ir.NewIncoming(constant.NewInt(types.I1, 0), c.currentBlock))
@@ -1864,6 +2892,17 @@ func (c *Codegen) emitirIntentar(n *Nodo) error {
 		c.tryFrames = c.tryFrames[:nivelAlEntrar]
 	}
 
+	// Si el 'finalmente' terminó por su cuenta ('retornar'/'romper'/
+	// 'continuar'/'lanzar'), nadie brancheó hacia 'endBlock' y este queda
+	// sin terminador: LLVM exige que TODO basic block termine en una
+	// instrucción terminadora, sin importar si es alcanzable. Igual que
+	// en la rama sin capturas (más arriba), se documenta como código
+	// muerto con 'unreachable' en vez de dejar un bloque inválido que
+	// hace paniquear a llir al serializar el módulo.
+	if !llegoAEnd {
+		endBlock.NewUnreachable()
+	}
+
 	c.currentBlock = endBlock
 	c.blockTerminated = !llegoAEnd
 	return nil
@@ -1895,6 +2934,10 @@ func (c *Codegen) emitirPara(n *Nodo) error {
 	var listRef value.Value
 	iterandoDiccionario := false
 	iterandoCadena := false
+	// dictLiberadoAnticipado indica que el diccionario iterado (un
+	// temporal) ya se liberó justo tras extraer sus claves, así que la
+	// limpieza de fin de bucle debe saltearlo (ver arriba).
+	dictLiberadoAnticipado := false
 
 	switch it := iterable.tip.(type) {
 	case *TipoLista:
@@ -1912,6 +2955,17 @@ func (c *Codegen) emitirPara(n *Nodo) error {
 		listRef = c.currentBlock.NewCall(keysFn, iterable.ref)
 		elemTipo = it.Clave
 		iterandoDiccionario = true
+		// El diccionario ya cumplió su misión (extraer las claves, que
+		// son independientes: primitivos copiados o cadenas retenidas).
+		// Si era un temporal sin otro dueño, se libera acá mismo en vez
+		// de esperar al final del bucle: el cuerpo nunca lo toca (solo
+		// ve las claves) y así una excepción dentro del cuerpo no lo
+		// fuga. Se marca para que la limpieza final no lo libere otra
+		// vez (ver dictLiberadoAnticipado).
+		if esTipoHeap(iterable.tip) && !iterable.compartido {
+			c.emitirLiberarValor(iterable.ref, iterable.tip)
+			dictLiberadoAnticipado = true
+		}
 	default:
 		if iterable.tip != nil && iterable.tip.Igual(TipoCadena) {
 			// Recorre la cadena byte a byte; cada elemento es en sí
@@ -1933,11 +2987,27 @@ func (c *Codegen) emitirPara(n *Nodo) error {
 	incBlock := c.currentFunc.NewBlock(c.newLabel("for.inc"))
 	endBlock := c.currentFunc.NewBlock(c.newLabel("for.end"))
 
-	listPtrVar := c.entryBlock.NewAlloca(types.NewPointer(types.I8))
+	listPtrVar := c.initBlock.NewAlloca(types.NewPointer(types.I8))
 	listOpq := c.currentBlock.NewBitCast(listRef, types.NewPointer(types.I8))
 	c.currentBlock.NewStore(listOpq, listPtrVar)
+	// Raíz de excepción para el contenedor sobre el que se itera, cuando
+	// es un temporal propio (lista de claves recién extraída, o iterable
+	// fresco): el bloque final que lo libera no se alcanza si el cuerpo
+	// lanza, así que sin raíz se fugaría. Con iterable prestado
+	// (compartido) NO se registra: sigue siendo del dueño original y
+	// liberarlo acá sería un doble free.
+	raizContenedor := false
+	if iterandoDiccionario {
+		c.initBlock.NewStore(constant.NewNull(types.NewPointer(types.I8)), listPtrVar)
+		c.registrarRaiz(listPtrVar, NewTipoLista(elemTipo))
+		raizContenedor = true
+	} else if esTipoHeap(iterable.tip) && !iterable.compartido {
+		c.initBlock.NewStore(constant.NewNull(types.NewPointer(types.I8)), listPtrVar)
+		c.registrarRaiz(listPtrVar, iterable.tip)
+		raizContenedor = true
+	}
 
-	idxPtr := c.entryBlock.NewAlloca(types.I64)
+	idxPtr := c.initBlock.NewAlloca(types.I64)
 	c.currentBlock.NewStore(constant.NewInt(types.I64, 0), idxPtr)
 
 	c.currentBlock.NewBr(condBlock)
@@ -1955,6 +3025,11 @@ func (c *Codegen) emitirPara(n *Nodo) error {
 	c.currentBlock.NewCondBr(cmp, bodyBlock, endBlock)
 
 	c.currentBlock = bodyBlock
+	// El cuerpo arranca en un bloque nuevo y vivo: hay que limpiar el
+	// flag. 'mientras' y 'si' ya lo hacen; 'para' depended de llegar
+	// siempre con el flag en false, lo que es un invariante frágil (es lo
+	// que dejó pasar bugs en la emisión de 'finally' y 'break').
+	c.blockTerminated = false
 	var getCall value.Value
 	// Aunque en este contexto el índice siempre cae dentro de rango (la
 	// condición del for lo garantiza), pasamos la línea por consistencia
@@ -1962,6 +3037,13 @@ func (c *Codegen) emitirPara(n *Nodo) error {
 	linea := constant.NewInt(types.I64, int64(n.Linea))
 	if iterandoCadena {
 		getCall = c.currentBlock.NewCall(c.rtStringGetChar, listVal, idxVal, linea)
+	} else if esElementoGenerico(elemTipo) {
+		// Lista de listas / de estructuras. Una lista interna se retiene
+		// más abajo como cualquier valor heap (la variable del 'para' es
+		// dueña de su propia referencia). Una estructura queda como
+		// ALIAS del elemento: no se retiene ni se libera, así que el
+		// cuerpo no debe modificar la lista que está recorriendo.
+		getCall = c.cargarSlot(listVal, idxVal, elemTipo, linea)
 	} else {
 		switch {
 		case elemTipo.Igual(TipoEntero):
@@ -1976,7 +3058,16 @@ func (c *Codegen) emitirPara(n *Nodo) error {
 			return fmt.Errorf("iteración sobre lista de %s no soportada", elemTipo)
 		}
 	}
-	varPtr := c.entryBlock.NewAlloca(c.llvmType(elemTipo))
+	varPtr := c.initBlock.NewAlloca(c.llvmType(elemTipo))
+	// Raíz de excepción para la variable de iteración (corre una vez por
+	// invocación, en el bloque de entrada). Solo si es DUEÑA de su
+	// referencia: los elementos heap se retienen abajo, pero una
+	// estructura queda como ALIAS del elemento de la lista (sin retener)
+	// y registrarla liberaría memoria de la lista al desenrollar.
+	if _, esEstructura := elemTipo.(*TipoEstructura); !esEstructura && esTipoHeap(elemTipo) {
+		c.initBlock.NewStore(constant.NewNull(types.NewPointer(types.I8)), varPtr)
+		c.registrarRaiz(varPtr, elemTipo)
+	}
 	// El elemento leído aquí sigue siendo propiedad de la lista/diccionario
 	// de origen (get_str no transfiere dueño): la variable del 'para'
 	// necesita su propia referencia retenida, para poder liberarla dentro
@@ -1996,6 +3087,10 @@ func (c *Codegen) emitirPara(n *Nodo) error {
 		if esTipoHeap(elemTipo) {
 			v := c.currentBlock.NewLoad(c.llvmType(elemTipo), varPtr)
 			c.emitirLiberarValor(v, elemTipo)
+			// La ranura queda anulada: sigue registrada como raíz hasta
+			// que la función retorne, y un desenrollado posterior debe
+			// ver NULL, no un puntero ya liberado.
+			c.currentBlock.NewStore(constant.NewNull(types.NewPointer(types.I8)), varPtr)
 		}
 	}
 	limpiezaListaFn := func() {
@@ -2011,6 +3106,12 @@ func (c *Codegen) emitirPara(n *Nodo) error {
 	// puntero que 'listRef' (se itera directo sobre él), así que alcanza
 	// con esta única liberación.
 	limpiezaIterableFn := func() {
+		// Si el diccionario temporal ya se liberó tras extraer sus
+		// claves (ver dictLiberadoAnticipado), no queda nada que hacer:
+		// liberarlo otra vez sería un doble free.
+		if dictLiberadoAnticipado {
+			return
+		}
 		if esTipoHeap(iterable.tip) && !iterable.compartido {
 			c.emitirLiberarValor(iterable.ref, iterable.tip)
 		}
@@ -2020,6 +3121,7 @@ func (c *Codegen) emitirPara(n *Nodo) error {
 		cond:                  incBlock,
 		end:                   endBlock,
 		nombreVar:             nombreVar,
+		varPtr:                varPtr,
 		limpiezaIter:          limpiezaIterFn,
 		limpiezaListaTemporal: limpiezaListaFn,
 		limpiezaIterable:      limpiezaIterableFn,
@@ -2062,6 +3164,12 @@ func (c *Codegen) emitirPara(n *Nodo) error {
 	// el caso RETORNO), ya que ese camino nunca llega a este bloque.
 	limpiezaListaFn()
 	limpiezaIterableFn()
+	if raizContenedor {
+		// La ranura sigue registrada como raíz hasta que la función
+		// retorne: anularla para que un desenrollado posterior no
+		// libere lo que se acaba de liberar acá.
+		c.currentBlock.NewStore(constant.NewNull(types.NewPointer(types.I8)), listPtrVar)
+	}
 	c.blockTerminated = false
 	return nil
 }
@@ -2085,7 +3193,11 @@ func (c *Codegen) emitirExpr(n *Nodo, expected Tipo) (cgValue, error) {
 		return cgValue{ref: constant.NewFloat(types.Double, x), tip: TipoDecimal}, nil
 
 	case "BOOLEANO":
-		return cgValue{ref: constant.NewBool(n.Valor.(bool)), tip: TipoBooleano}, nil
+		b, ok := n.Valor.(bool)
+		if !ok {
+			return cgValue{}, fmt.Errorf("línea %d: literal booleano inválido", n.Linea)
+		}
+		return cgValue{ref: constant.NewBool(b), tip: TipoBooleano}, nil
 
 	case "NINGUNO":
 		t := n.TipoInferido
@@ -2103,14 +3215,27 @@ func (c *Codegen) emitirExpr(n *Nodo, expected Tipo) (cgValue, error) {
 		arrType := g.ContentType.(*types.ArrayType)
 		gep := c.currentBlock.NewGetElementPtr(arrType, g,
 			constant.NewInt(types.I64, 0), constant.NewInt(types.I64, 0))
-		inst := c.currentBlock.NewCall(c.rtStringNew, gep, constant.NewInt(types.I64, int64(len([]byte(texto)))))
+		// len(texto) directo: len([]byte(texto)) es idéntico para un string de Go
+		// (ambos cuentan BYTES, no runes), pero la conversión asigna y copia la
+		// cadena entera en el heap solo para poder medirla.
+		inst := c.currentBlock.NewCall(c.rtStringNew, gep, constant.NewInt(types.I64, int64(len(texto))))
 		return cgValue{ref: inst, tip: TipoCadena}, nil
 
 	case "CADENA_INTERPOLADA":
 		texto, _ := n.Valor.(string)
-		literales, expresiones := parseInterpolatedString(texto)
+		literales, _ := parseInterpolatedString(texto)
+
+		// Las {expresiones} llegaron parseadas como hijos del nodo (ver
+		// Parser.parsearCadenaInterpolada): cada uno es una expresión
+		// completa — '{p.x}', '{sumar(1, 2)}', '{lista[i]}' — no solo un
+		// nombre de variable. El texto de la expresión ya no se usa acá.
 
 		makeLiteral := func(lit string) value.Value {
+			// Las partes literales llegan crudas del lexer (las
+			// {expresiones} se re-lexean aparte): se cocinan acá los
+			// escapes (\\n, \\t, ...) igual que en CADENA_TEXTO. El largo
+			// se mide DESPUÉS de cocinar (bytes reales).
+			lit = interpretarEscapes(lit)
 			g := c.internString(lit)
 			arrType := g.ContentType.(*types.ArrayType)
 			gep := c.currentBlock.NewGetElementPtr(arrType, g,
@@ -2136,12 +3261,24 @@ func (c *Codegen) emitirExpr(n *Nodo, expected Tipo) (cgValue, error) {
 		} else {
 			result = makeLiteral("")
 		}
+		// Mientras la interpolación se construye, 'result' no tiene dueño
+		// estable. Se registra como temporal en curso para que, si alguna
+		// de las {expresiones} lanza, el 'lanzar' la devuelva antes del
+		// longjmp en vez de fugarla.
+		registrado := c.registrarTemporal(result, TipoCadena)
 
 		litIdx := 1
-		for _, expr := range expresiones {
-			tempNodo := &Nodo{Tipo: "IDENTIFICADOR", Valor: expr, Linea: n.Linea}
-			val, err := c.emitirExpr(tempNodo, nil)
+		for _, hijo := range n.Hijos {
+			val, err := c.emitirExpr(hijo, nil)
 			if err != nil {
+				// Si al evaluar una de las {expresiones} el código
+				// LANZA (por ejemplo, una llamada que falla), la cadena
+				// que ya veníamos concatenando queda huérfana: nadie la
+				// va a liberar. Antes se perdía una cadena por cada
+				// interpolación interrumpida por una excepción
+				// (confirmado con LeakSanitizer). Se devuelve ahora,
+				// mientras aún somos el dueño.
+				liberarIntermedio(result)
 				return cgValue{}, err
 			}
 
@@ -2185,8 +3322,16 @@ func (c *Codegen) emitirExpr(n *Nodo, expected Tipo) (cgValue, error) {
 				result = nuevoResult
 				litIdx++
 			}
+			// 'result' cambió de puntero: se actualiza el temporal registrado
+			// para que apunte al valor vivo (los anteriores ya se liberaron
+			// arriba).
+			c.actualizarTemporal(registrado, result)
 		}
 
+		// La expresión terminó bien: el temporal deja de estar en curso y
+		// la referencia pasa al cgValue que se devuelve, cuyo dueño es el
+		// código que la recibe.
+		c.desregistrarTemporal(registrado)
 		return cgValue{ref: result, tip: TipoCadena}, nil
 
 	case "IDENTIFICADOR":
@@ -2196,7 +3341,7 @@ func (c *Codegen) emitirExpr(n *Nodo, expected Tipo) (cgValue, error) {
 			return cgValue{}, fmt.Errorf("línea %d: variable '%s' no declarada", n.Linea, nombre)
 		}
 		load := c.currentBlock.NewLoad(c.llvmType(variable.tip), variable.ptr)
-		return cgValue{ref: load, tip: variable.tip, compartido: esTipoHeap(variable.tip)}, nil
+		return cgValue{ref: load, tip: variable.tip, compartido: poseeReferencias(variable.tip)}, nil
 
 	case "UNARIA":
 		valor, err := c.emitirExpr(n.Hijos[0], nil)
@@ -2232,9 +3377,18 @@ func (c *Codegen) emitirExpr(n *Nodo, expected Tipo) (cgValue, error) {
 		if err != nil {
 			return cgValue{}, err
 		}
+		// Listas: el verificador ya acepta 'x en lista' y tipa el operando
+		// izquierdo contra el tipo de elemento, así que acá hay que
+		// recorrer la lista comparando. Antes solo se soportaba el
+		// diccionario y una expresión que pasaba el verificador moría en
+		// el codegen con "'en' todavía solo está soportado en LLVM sobre
+		// diccionarios" (verificador.go:715-717).
+		if listaTipo, esLista := contenedor.tip.(*TipoLista); esLista {
+			return c.emitirEnLista(elemento, contenedor, listaTipo, n.Linea)
+		}
 		dictTipo, ok := contenedor.tip.(*TipoDiccionario)
 		if !ok {
-			return cgValue{}, fmt.Errorf("línea %d: 'en' todavía solo está soportado en LLVM sobre diccionarios", n.Linea)
+			return cgValue{}, fmt.Errorf("línea %d: 'en' todavía solo está soportado en LLVM sobre listas y diccionarios", n.Linea)
 		}
 		kSuf, _, ok1 := primSuffix(dictTipo.Clave)
 		if !ok1 {
@@ -2259,7 +3413,7 @@ func (c *Codegen) emitirExpr(n *Nodo, expected Tipo) (cgValue, error) {
 		return cgValue{ref: call, tip: TipoBooleano}, nil
 
 	case "LLAMADA":
-		return c.emitirLlamada(n)
+		return c.emitirLlamada(n, expected)
 
 	case "ACCESO_ATRIBUTO":
 		base, err := c.emitirExpr(n.Hijos[0], nil)
@@ -2270,14 +3424,22 @@ func (c *Codegen) emitirExpr(n *Nodo, expected Tipo) (cgValue, error) {
 		if !ok {
 			return cgValue{}, fmt.Errorf("línea %d: no es una estructura", n.Linea)
 		}
-		_, idx, ok := s.Campo(n.Valor.(string))
+		nombreCampo, _ := n.Valor.(string)
+		_, idx, ok := s.Campo(nombreCampo)
 		if !ok {
-			return cgValue{}, fmt.Errorf("línea %d: campo inexistente", n.Linea)
+			return cgValue{}, fmt.Errorf("línea %d: la estructura '%s' no tiene el campo '%s'", n.Linea, s.Nombre, nombreCampo)
 		}
-		ptr := c.currentBlock.NewAlloca(c.llvmType(s))
-		c.currentBlock.NewStore(base.ref, ptr)
-		fieldPtr := c.currentBlock.NewGetElementPtr(c.llvmType(s), ptr, constant.NewInt(types.I32, 0), constant.NewInt(types.I32, int64(idx)))
-		return cgValue{ref: c.currentBlock.NewLoad(c.llvmType(s.Campos[idx].Tipo), fieldPtr), tip: s.Campos[idx].Tipo}, nil
+		// 'base.ref' ya es un valor SSA del tipo de la estructura, así
+		// que leer un campo es un solo 'extractvalue'. Antes se armaba un
+		// alloca + store + gep + load (4 instrucciones y una ranura en el
+		// stack) solo para copiarla a memoria y volverla a leer. Peor: el
+		// alloca caía en el bloque CORRIENTE, y dentro de un bucle eso no
+		// lo puede promover mem2reg, así que el frame crecía en cada
+		// iteración (una lectura de campo por vuelta podía terminar
+		// desbordando el stack en un bucle largo).
+		campo := c.currentBlock.NewExtractValue(base.ref, uint64(idx))
+		compartido := poseeReferencias(s.Campos[idx].Tipo)
+		return cgValue{ref: campo, tip: s.Campos[idx].Tipo, compartido: compartido}, nil
 
 	case "LISTA":
 		if n.TipoInferido == nil {
@@ -2326,6 +3488,21 @@ func (c *Codegen) emitirExpr(n *Nodo, expected Tipo) (cgValue, error) {
 			elemTipo := b.Elemento
 			listPtr := c.currentBlock.NewBitCast(base.ref, types.NewPointer(types.I8))
 			linea := constant.NewInt(types.I64, int64(n.Linea))
+			if esElementoGenerico(elemTipo) {
+				// Lista de listas / de estructuras. Mismo criterio de
+				// propiedad que abajo (FIX 2.3a): si 'base' es un
+				// temporal, él era el dueño del elemento, así que se
+				// retiene (todas sus referencias, si es una estructura)
+				// ANTES de liberar 'base', y el resultado pasa a ser
+				// propio. Si 'base' es una variable, el resultado es un
+				// alias y quien lo guarde debe retenerlo.
+				elem := c.cargarSlot(listPtr, idx.ref, elemTipo, linea)
+				if !base.compartido {
+					c.emitirRetenerEnValor(elem, elemTipo)
+				}
+				c.liberarOperandoFrescoSiHeap(base)
+				return cgValue{ref: elem, tip: elemTipo, compartido: base.compartido && poseeReferencias(elemTipo)}, nil
+			}
 			var getCall value.Value
 			switch {
 			case elemTipo.Igual(TipoEntero):
@@ -2362,6 +3539,41 @@ func (c *Codegen) emitirExpr(n *Nodo, expected Tipo) (cgValue, error) {
 				return cgValue{}, fmt.Errorf("línea %d: la clave usada para indexar no coincide con el tipo de clave del diccionario", n.Linea)
 			}
 			kSuf, _, ok1 := primSuffix(b.Clave)
+			if !ok1 {
+				return cgValue{}, fmt.Errorf("línea %d: tipo de clave de diccionario no soportado en codegen", n.Linea)
+			}
+			// Valor genérico (lista o estructura): se pide el slot con
+			// chequeo de rango (KeyError capturable) y se carga el valor
+			// tipado, con el mismo criterio de propiedad que la lista
+			// genérica (FIX 2.3a): si 'base' es temporal, él era el dueño
+			// y se retiene antes de liberarlo; si es variable, es alias.
+			if esElementoGenerico(b.Valor) {
+				desc, err := c.descriptorElemento(b.Valor)
+				if err != nil {
+					return cgValue{}, fmt.Errorf("línea %d: %v", n.Linea, err)
+				}
+				slotFn, ok := c.rtDictSlotGen[kSuf]
+				if !ok {
+					return cgValue{}, fmt.Errorf("línea %d: combinación de tipos de diccionario (%s, genérico) no soportada", n.Linea, kSuf)
+				}
+				// Las variantes con clave cadena consumen una referencia
+				// (igual que wini_dict_get_str_*): retener antes si la
+				// clave viene de una variable viva.
+				if esTipoHeap(idx.tip) && idx.compartido {
+					idx.ref = c.emitirRetenerValor(idx.ref, idx.tip)
+				}
+				dictPtr := c.currentBlock.NewBitCast(base.ref, types.NewPointer(types.I8))
+				linea := constant.NewInt(types.I64, int64(n.Linea))
+				slot := c.currentBlock.NewCall(slotFn, dictPtr, idx.ref, desc, linea)
+				tipado := c.currentBlock.NewBitCast(slot, types.NewPointer(c.llvmType(b.Valor)))
+				elem := c.currentBlock.NewLoad(c.llvmType(b.Valor), tipado)
+				if !base.compartido {
+					c.emitirRetenerEnValor(elem, b.Valor)
+				}
+				c.liberarOperandoFrescoSiHeap(base)
+				compartidoRes := base.compartido && poseeReferencias(b.Valor)
+				return cgValue{ref: elem, tip: b.Valor, compartido: compartidoRes}, nil
+			}
 			vSuf, _, ok2 := primSuffix(b.Valor)
 			if !ok1 || !ok2 {
 				return cgValue{}, fmt.Errorf("línea %d: tipo de clave/valor de diccionario no soportado en codegen", n.Linea)
@@ -2448,6 +3660,51 @@ func (c *Codegen) emitirExpr(n *Nodo, expected Tipo) (cgValue, error) {
 			return cgValue{}, fmt.Errorf("línea %d: el tipo inferido no es un diccionario", n.Linea)
 		}
 		kSuf, _, ok1 := primSuffix(dictTipo.Clave)
+		if !ok1 {
+			return cgValue{}, fmt.Errorf("línea %d: tipo de clave de diccionario no soportado en codegen (la clave solo puede ser entero, decimal, booleano o cadena)", n.Linea)
+		}
+		// Valor genérico (lista o estructura): va por puntero opaco más
+		// descriptor, igual que los elementos de lista genérica.
+		if esElementoGenerico(dictTipo.Valor) {
+			desc, err := c.descriptorElemento(dictTipo.Valor)
+			if err != nil {
+				return cgValue{}, fmt.Errorf("línea %d: %v", n.Linea, err)
+			}
+			setFn, ok := c.rtDictSetGen[kSuf]
+			if !ok {
+				return cgValue{}, fmt.Errorf("línea %d: combinación de tipos de diccionario (%s, genérico) no soportada", n.Linea, kSuf)
+			}
+			dictCall := c.currentBlock.NewCall(c.rtDictNew)
+			for _, par := range n.Hijos {
+				claveVal, err := c.emitirExpr(par.Hijos[0], nil)
+				if err != nil {
+					return cgValue{}, err
+				}
+				if !claveVal.tip.Igual(dictTipo.Clave) {
+					return cgValue{}, fmt.Errorf("línea %d: tipo de clave no coincide con el tipo del diccionario", par.Hijos[0].Linea)
+				}
+				valorVal, err := c.emitirExpr(par.Hijos[1], nil)
+				if err != nil {
+					return cgValue{}, err
+				}
+				if !valorVal.tip.Igual(dictTipo.Valor) {
+					return cgValue{}, fmt.Errorf("línea %d: tipo de valor no coincide con el tipo del diccionario", par.Hijos[1].Linea)
+				}
+				// El diccionario adopta el valor: retener si venía de
+				// otra ubicación. El runtime copia desc->size bytes
+				// desde la dirección pasada: el valor viaja en un
+				// temporal (igual que wini_list_set_gen), sea un
+				// puntero (lista) o un struct por valor.
+				valorVal = c.retenerParaAlmacenar(valorVal)
+				tmpVal := c.initBlock.NewAlloca(c.llvmType(dictTipo.Valor))
+				c.currentBlock.NewStore(valorVal.ref, tmpVal)
+				valPtr := c.currentBlock.NewBitCast(tmpVal, types.NewPointer(types.I8))
+				claveVal = c.retenerSiCompartido(claveVal)
+				dictPtr := c.currentBlock.NewBitCast(dictCall, types.NewPointer(types.I8))
+				c.currentBlock.NewCall(setFn, dictPtr, claveVal.ref, valPtr, desc)
+			}
+			return cgValue{ref: dictCall, tip: dictTipo}, nil
+		}
 		vSuf, _, ok2 := primSuffix(dictTipo.Valor)
 		if !ok1 || !ok2 {
 			return cgValue{}, fmt.Errorf("línea %d: tipo de clave/valor de diccionario no soportado en codegen", n.Linea)
@@ -2521,6 +3778,11 @@ func (c *Codegen) emitirBinaria(n *Nodo) (cgValue, error) {
 	}
 
 	// --- Concatenación de cadenas con '+' ---
+	// El resultado SIEMPRE es una referencia fresca de la que este valor
+	// pasa a ser dueño exclusivo (wini_string_concat retiene una copia
+	// adicional cuando un operando llega NULL, en lugar de devolver el
+	// puntero del otro tal cual: ver runtime.c). Por eso acá se liberan
+	// solo los operandos frescos y el resultado se devuelve tal cual.
 	if op == "+" && izq.tip.Igual(TipoCadena) && der.tip.Igual(TipoCadena) {
 		call := c.currentBlock.NewCall(c.rtStringConcat, izq.ref, der.ref)
 		c.liberarOperandoFrescoSiHeap(izq)
@@ -2532,6 +3794,16 @@ func (c *Codegen) emitirBinaria(n *Nodo) (cgValue, error) {
 	if op == "+" {
 		if listA, ok := izq.tip.(*TipoLista); ok {
 			if listB, ok := der.tip.(*TipoLista); ok && listA.Igual(listB) {
+				if esElementoGenerico(listA.Elemento) {
+					desc, err := c.descriptorElemento(listA.Elemento)
+					if err != nil {
+						return cgValue{}, fmt.Errorf("línea %d: %v", n.Linea, err)
+					}
+					call := c.currentBlock.NewCall(c.rtListConcatGen, izq.ref, der.ref, desc)
+					c.liberarOperandoFrescoSiHeap(izq)
+					c.liberarOperandoFrescoSiHeap(der)
+					return cgValue{ref: call, tip: izq.tip}, nil
+				}
 				code := tipoCode(listA.Elemento)
 				if code == -1 {
 					return cgValue{}, fmt.Errorf("línea %d: concatenación de listas de %s no soportada", n.Linea, listA.Elemento)
@@ -2555,8 +3827,18 @@ func (c *Codegen) emitirBinaria(n *Nodo) (cgValue, error) {
 		case "*":
 			res = c.currentBlock.NewMul(izq.ref, der.ref)
 		case "/":
+			// El divisor puede ser 0: el runtime lanza un ErrorMatematico
+			// capturable ("división por cero") en vez de dejar que la
+			// instrucción sdiv mate el programa con SIGFPE, que no se
+			// puede capturar con 'intentar/capturar'. Se pasan ambos
+			// operandos porque 'INT64_MIN / -1' también rompe (el
+			// resultado no entra en un int64_t) y eso solo se puede
+			// detectar conociendo el dividendo.
+			c.currentBlock.NewCall(c.rtCheckDivisor, izq.ref, der.ref, constant.NewInt(types.I64, int64(n.Linea)))
 			res = c.currentBlock.NewSDiv(izq.ref, der.ref)
 		case "%":
+			// Igual que '/', un '%% 0' entero crashea con SIGFPE.
+			c.currentBlock.NewCall(c.rtCheckDivisor, izq.ref, der.ref, constant.NewInt(types.I64, int64(n.Linea)))
 			res = c.currentBlock.NewSRem(izq.ref, der.ref)
 		default:
 			return cgValue{}, fmt.Errorf("línea %d: operador '%s' no soportado para enteros", n.Linea, op)
@@ -2573,8 +3855,19 @@ func (c *Codegen) emitirBinaria(n *Nodo) (cgValue, error) {
 		case "*":
 			res = c.currentBlock.NewFMul(izq.ref, der.ref)
 		case "/":
+			// Un divisor decimal cero también es un error, no un 'inf'
+			// silencioso. IEEE-754 define 1.0/0.0 = inf, pero eso es
+			// matemática de máquina, no el resultado que el programa
+			// pidió: el autor casi siempre quiere un error. Además, el
+			// lenguaje ya lanza ErrorMatematico para el entero, así que
+			// 'a / b' que da 0 con decimal y explota con entero era
+			// incoherente según el tipo declarado de los operandos.
+			c.currentBlock.NewCall(c.rtCheckDivisorDecimal, der.ref,
+				constant.NewInt(types.I64, int64(n.Linea)))
 			res = c.currentBlock.NewFDiv(izq.ref, der.ref)
 		case "%":
+			c.currentBlock.NewCall(c.rtCheckDivisorDecimal, der.ref,
+				constant.NewInt(types.I64, int64(n.Linea)))
 			res = c.currentBlock.NewFRem(izq.ref, der.ref)
 		default:
 			return cgValue{}, fmt.Errorf("línea %d: operador '%s' no soportado para decimales", n.Linea, op)
@@ -2611,10 +3904,7 @@ func (c *Codegen) emitirComparacion(op string, izq, der cgValue, linea int) (cgV
 	}
 
 	if izq.tip.Igual(TipoEntero) || izq.tip.Igual(TipoBooleano) {
-		pred, ok := map[string]enum.IPred{
-			"==": enum.IPredEQ, "!=": enum.IPredNE, "<>": enum.IPredNE,
-			"<": enum.IPredSLT, "<=": enum.IPredSLE, ">": enum.IPredSGT, ">=": enum.IPredSGE,
-		}[op]
+		pred, ok := predicadosEntero[op]
 		if !ok {
 			return cgValue{}, fmt.Errorf("línea %d: comparador '%s' no soportado", linea, op)
 		}
@@ -2622,10 +3912,7 @@ func (c *Codegen) emitirComparacion(op string, izq, der cgValue, linea int) (cgV
 		return cgValue{ref: res, tip: TipoBooleano}, nil
 	}
 	if izq.tip.Igual(TipoDecimal) {
-		pred, ok := map[string]enum.FPred{
-			"==": enum.FPredOEQ, "!=": enum.FPredONE, "<>": enum.FPredONE,
-			"<": enum.FPredOLT, "<=": enum.FPredOLE, ">": enum.FPredOGT, ">=": enum.FPredOGE,
-		}[op]
+		pred, ok := predicadosDecimal[op]
 		if !ok {
 			return cgValue{}, fmt.Errorf("línea %d: comparador '%s' no soportado", linea, op)
 		}
@@ -2721,12 +4008,42 @@ func (c *Codegen) emitirLogico(n *Nodo) (cgValue, error) {
 	return cgValue{}, fmt.Errorf("línea %d: operador lógico '%s' no soportado", n.Linea, op)
 }
 
+// construirListaGenerica arma una lista cuyos elementos son listas o
+// estructuras: copia los valores a un arreglo temporal y llama a
+// wini_list_new_gen con el descriptor del tipo de elemento. La lista pasa a
+// ser dueña de las referencias de cada elemento (retenerParaAlmacenar).
+func (c *Codegen) construirListaGenerica(elemTipo Tipo, elementos []cgValue) (value.Value, error) {
+	desc, err := c.descriptorElemento(elemTipo)
+	if err != nil {
+		return nil, err
+	}
+	i8p := types.NewPointer(types.I8)
+	if len(elementos) == 0 {
+		return c.currentBlock.NewCall(c.rtListNewGen, desc, constant.NewNull(i8p), constant.NewInt(types.I64, 0)), nil
+	}
+	arrType := types.NewArray(uint64(len(elementos)), c.llvmType(elemTipo))
+	arrPtr := c.initBlock.NewAlloca(arrType)
+	for i, val := range elementos {
+		val = c.retenerParaAlmacenar(val)
+		gep := c.currentBlock.NewGetElementPtr(arrType, arrPtr,
+			constant.NewInt(types.I64, 0), constant.NewInt(types.I64, int64(i)))
+		c.currentBlock.NewStore(val.ref, gep)
+	}
+	primero := c.currentBlock.NewGetElementPtr(arrType, arrPtr,
+		constant.NewInt(types.I64, 0), constant.NewInt(types.I64, 0))
+	datos := c.currentBlock.NewBitCast(primero, i8p)
+	return c.currentBlock.NewCall(c.rtListNewGen, desc, datos, constant.NewInt(types.I64, int64(len(elementos)))), nil
+}
+
 // construirListaRuntime arma en tiempo de ejecución una WiniList a partir
 // de 'elementos' ya evaluados (todos del mismo tipo 'elemTipo'): reserva un
 // arreglo en el stack, copia cada valor, y llama a la variante tipada de
 // wini_list_new_*. Se comparte entre el literal '[...]' y la recolección de
 // argumentos de un parámetro variádico estilo Wini ('*nombre:tipo').
 func (c *Codegen) construirListaRuntime(elemTipo Tipo, elementos []cgValue) (value.Value, error) {
+	if esElementoGenerico(elemTipo) {
+		return c.construirListaGenerica(elemTipo, elementos)
+	}
 	var llvmElemType types.Type
 	switch {
 	case elemTipo.Igual(TipoEntero):
@@ -2763,7 +4080,7 @@ func (c *Codegen) construirListaRuntime(elemTipo Tipo, elementos []cgValue) (val
 
 	numElem := uint64(len(elementos))
 	arrType := types.NewArray(numElem, llvmElemType)
-	arrPtr := c.entryBlock.NewAlloca(arrType)
+	arrPtr := c.initBlock.NewAlloca(arrType)
 
 	for i, val := range elementos {
 		// Si el elemento viene de una variable existente (o de leer otra
@@ -2788,7 +4105,87 @@ func (c *Codegen) construirListaRuntime(elemTipo Tipo, elementos []cgValue) (val
 	return c.currentBlock.NewCall(rtListNew, dataPtr, size), nil
 }
 
-func (c *Codegen) emitirLlamada(n *Nodo) (cgValue, error) {
+// leerElementoLista genera la lectura del elemento 'idxRef' de la lista
+// 'base' (ya evaluada), con el criterio de propiedad de INDEXACION
+// (FIX 2.3a): si la base es fresca se retiene el elemento heap antes de
+// liberarla; si es compartida el resultado es un alias. Lo usan los
+// builtins 'primero' y 'ultimo'.
+func (c *Codegen) leerElementoLista(base cgValue, listaTipo *TipoLista, idxRef value.Value, linea int64) (cgValue, error) {
+	elemTipo := listaTipo.Elemento
+	listPtr := c.currentBlock.NewBitCast(base.ref, types.NewPointer(types.I8))
+	lineaVal := constant.NewInt(types.I64, linea)
+	if esElementoGenerico(elemTipo) {
+		elem := c.cargarSlot(listPtr, idxRef, elemTipo, lineaVal)
+		if !base.compartido {
+			c.emitirRetenerEnValor(elem, elemTipo)
+		}
+		c.liberarOperandoFrescoSiHeap(base)
+		return cgValue{ref: elem, tip: elemTipo, compartido: base.compartido && poseeReferencias(elemTipo)}, nil
+	}
+	var getCall value.Value
+	switch {
+	case elemTipo.Igual(TipoEntero):
+		getCall = c.currentBlock.NewCall(c.rtListGetI64, listPtr, idxRef, lineaVal)
+	case elemTipo.Igual(TipoDecimal):
+		getCall = c.currentBlock.NewCall(c.rtListGetF64, listPtr, idxRef, lineaVal)
+	case elemTipo.Igual(TipoBooleano):
+		getCall = c.currentBlock.NewCall(c.rtListGetI1, listPtr, idxRef, lineaVal)
+	case elemTipo.Igual(TipoCadena):
+		getCall = c.currentBlock.NewCall(c.rtListGetStr, listPtr, idxRef, lineaVal)
+	default:
+		return cgValue{}, fmt.Errorf("línea %d: acceso a lista de %s no soportado", linea, elemTipo)
+	}
+	if esTipoHeap(elemTipo) && !base.compartido {
+		getCall = c.emitirRetenerValor(getCall, elemTipo)
+	}
+	c.liberarOperandoFrescoSiHeap(base)
+	compartidoRes := base.compartido && esTipoHeap(elemTipo)
+	return cgValue{ref: getCall, tip: elemTipo, compartido: compartidoRes}, nil
+}
+
+// emitirInsertar genera 'insertar' in place (y 'agregar' como caso
+// particular con índice == longitud): muta la lista y devuelve el MISMO
+// puntero, con 'compartido' propagado del operando. La asignación hace
+// retener-antes-de-liberar (ver ASIGNACION), así 'l = insertar(l, ...)'
+// es seguro; y como sentencia ('insertar(l, ...)') la mutación persiste.
+// El operando lista NO se libera acá: sigue vivo como resultado.
+func (c *Codegen) emitirInsertar(lista cgValue, listaTipo *TipoLista, indice cgValue, elem cgValue, linea int64) (cgValue, error) {
+	listPtr := c.currentBlock.NewBitCast(lista.ref, types.NewPointer(types.I8))
+	lineaVal := constant.NewInt(types.I64, linea)
+	var call value.Value
+	if esElementoGenerico(listaTipo.Elemento) {
+		desc, err := c.descriptorElemento(listaTipo.Elemento)
+		if err != nil {
+			return cgValue{}, fmt.Errorf("línea %d: %v", linea, err)
+		}
+		// El runtime adopta el valor: se retiene si era compartido y se
+		// pasa por dirección (igual que construirListaGenerica).
+		val := c.retenerParaAlmacenar(elem)
+		tmp := c.initBlock.NewAlloca(c.llvmType(listaTipo.Elemento))
+		c.currentBlock.NewStore(val.ref, tmp)
+		ptr := c.currentBlock.NewBitCast(tmp, types.NewPointer(types.I8))
+		call = c.currentBlock.NewCall(c.rtListInsertGen, listPtr, indice.ref, ptr, desc, lineaVal)
+	} else {
+		// El runtime adopta la referencia del valor (solo relevante para
+		// cadenas): retener si venía de otra ubicación.
+		elem = c.retenerSiCompartido(elem)
+		switch {
+		case listaTipo.Elemento.Igual(TipoEntero):
+			call = c.currentBlock.NewCall(c.rtListInsertI64, listPtr, indice.ref, elem.ref, lineaVal)
+		case listaTipo.Elemento.Igual(TipoDecimal):
+			call = c.currentBlock.NewCall(c.rtListInsertF64, listPtr, indice.ref, elem.ref, lineaVal)
+		case listaTipo.Elemento.Igual(TipoBooleano):
+			call = c.currentBlock.NewCall(c.rtListInsertI1, listPtr, indice.ref, elem.ref, lineaVal)
+		case listaTipo.Elemento.Igual(TipoCadena):
+			call = c.currentBlock.NewCall(c.rtListInsertStr, listPtr, indice.ref, elem.ref, lineaVal)
+		default:
+			return cgValue{}, fmt.Errorf("línea %d: 'insertar' no soportado para listas de %s", linea, listaTipo.Elemento)
+		}
+	}
+	return cgValue{ref: call, tip: lista.tip, compartido: lista.compartido}, nil
+}
+
+func (c *Codegen) emitirLlamada(n *Nodo, expected Tipo) (cgValue, error) {
 	nombre, _ := n.Valor.(string)
 	if s, ok := c.estructuras[nombre]; ok {
 		if len(n.Hijos) != len(s.Campos) {
@@ -2800,6 +4197,9 @@ func (c *Codegen) emitirLlamada(n *Nodo) (cgValue, error) {
 			if err != nil {
 				return cgValue{}, err
 			}
+			// La estructura pasa a ser dueña de sus campos heap: un
+			// argumento que viene de una variable/elemento se retiene.
+			arg = c.retenerParaAlmacenar(arg)
 			result = c.currentBlock.NewInsertValue(result, arg.ref, uint64(i))
 		}
 		return cgValue{ref: result, tip: s}, nil
@@ -2835,6 +4235,17 @@ func (c *Codegen) emitirLlamada(n *Nodo) (cgValue, error) {
 			c.liberarOperandoFrescoSiHeap(arg)
 			return cgValue{ref: call, tip: NewTipoLista(dictTipo.Clave)}, nil
 		}
+		// Valores genéricos (lista o estructura): van por descriptor.
+		if esElementoGenerico(dictTipo.Valor) {
+			desc, err := c.descriptorElemento(dictTipo.Valor)
+			if err != nil {
+				return cgValue{}, fmt.Errorf("línea %d: %v", n.Linea, err)
+			}
+			call := c.currentBlock.NewCall(c.rtDictValuesGen, dictPtr, desc)
+			// FIX 2.1a: mismo caso que 'claves', para 'valores'.
+			c.liberarOperandoFrescoSiHeap(arg)
+			return cgValue{ref: call, tip: NewTipoLista(dictTipo.Valor)}, nil
+		}
 		vSuf, _, ok := primSuffix(dictTipo.Valor)
 		if !ok {
 			return cgValue{}, fmt.Errorf("línea %d: tipo de valor de diccionario no soportado en codegen", n.Linea)
@@ -2847,6 +4258,192 @@ func (c *Codegen) emitirLlamada(n *Nodo) (cgValue, error) {
 		// FIX 2.1a: mismo caso que 'claves', para 'valores'.
 		c.liberarOperandoFrescoSiHeap(arg)
 		return cgValue{ref: call, tip: NewTipoLista(dictTipo.Valor)}, nil
+	}
+
+	// Built-in: longitud(x) -> entero. Acepta cadena, lista o diccionario
+	// y despacha a la función de longitud del runtime que corresponda
+	// según el tipo estático del argumento.
+	if nombre == "longitud" {
+		if len(n.Hijos) != 1 {
+			return cgValue{}, fmt.Errorf("línea %d: 'longitud' espera exactamente 1 argumento", n.Linea)
+		}
+		arg, err := c.emitirExpr(n.Hijos[0], nil)
+		if err != nil {
+			return cgValue{}, err
+		}
+		i8p := types.NewPointer(types.I8)
+		switch arg.tip.(type) {
+		case *TipoLista:
+			ptr := c.currentBlock.NewBitCast(arg.ref, i8p)
+			call := c.currentBlock.NewCall(c.rtListLen, ptr)
+			return cgValue{ref: call, tip: TipoEntero}, nil
+		case *TipoDiccionario:
+			ptr := c.currentBlock.NewBitCast(arg.ref, i8p)
+			call := c.currentBlock.NewCall(c.rtDictLen, ptr)
+			return cgValue{ref: call, tip: TipoEntero}, nil
+		default:
+			if !arg.tip.Igual(TipoCadena) {
+				return cgValue{}, fmt.Errorf("línea %d: 'longitud' espera una cadena, lista o diccionario, se encontró %s", n.Linea, arg.tip)
+			}
+			call := c.currentBlock.NewCall(c.rtStringLen, arg.ref)
+			return cgValue{ref: call, tip: TipoEntero}, nil
+		}
+	}
+
+	// Built-in: agregar(lista, elemento). Muta la lista EN EL LUGAR
+	// (como append de Python) y devuelve la MISMA lista: valen tanto
+	// 'agregar(l, x)' como 'l = agregar(l, x)'. Se implementa como
+	// insertar al final (índice == longitud).
+	if nombre == "agregar" {
+		if len(n.Hijos) != 2 {
+			return cgValue{}, fmt.Errorf("línea %d: 'agregar' espera exactamente 2 argumentos (lista y elemento)", n.Linea)
+		}
+		lista, err := c.emitirExpr(n.Hijos[0], nil)
+		if err != nil {
+			return cgValue{}, err
+		}
+		listaTipo, ok := lista.tip.(*TipoLista)
+		if !ok {
+			return cgValue{}, fmt.Errorf("línea %d: 'agregar' espera una lista como primer argumento, se encontró %s", n.Linea, lista.tip)
+		}
+		elem, err := c.emitirExpr(n.Hijos[1], nil)
+		if err != nil {
+			return cgValue{}, err
+		}
+		if !elem.tip.Igual(listaTipo.Elemento) {
+			return cgValue{}, fmt.Errorf("línea %d: el elemento de 'agregar' debe ser %s, se encontró %s", n.Linea, listaTipo.Elemento, elem.tip)
+		}
+		listPtr := c.currentBlock.NewBitCast(lista.ref, types.NewPointer(types.I8))
+		largo := c.currentBlock.NewCall(c.rtListLen, listPtr)
+		return c.emitirInsertar(lista, listaTipo,
+			cgValue{ref: largo, tip: TipoEntero}, elem, int64(n.Linea))
+	}
+
+	// Built-in: vacia(x) -> booleano. Verdadero si la cadena, lista o
+	// diccionario no tiene elementos. O(1): compara la longitud del
+	// runtime con cero.
+	if nombre == "vacia" {
+		if len(n.Hijos) != 1 {
+			return cgValue{}, fmt.Errorf("línea %d: 'vacia' espera exactamente 1 argumento", n.Linea)
+		}
+		arg, err := c.emitirExpr(n.Hijos[0], nil)
+		if err != nil {
+			return cgValue{}, err
+		}
+		var lenCall value.Value
+		switch arg.tip.(type) {
+		case *TipoLista:
+			ptr := c.currentBlock.NewBitCast(arg.ref, types.NewPointer(types.I8))
+			lenCall = c.currentBlock.NewCall(c.rtListLen, ptr)
+		case *TipoDiccionario:
+			ptr := c.currentBlock.NewBitCast(arg.ref, types.NewPointer(types.I8))
+			lenCall = c.currentBlock.NewCall(c.rtDictLen, ptr)
+		default:
+			if !arg.tip.Igual(TipoCadena) {
+				return cgValue{}, fmt.Errorf("línea %d: 'vacia' espera una cadena, lista o diccionario, se encontró %s", n.Linea, arg.tip)
+			}
+			lenCall = c.currentBlock.NewCall(c.rtStringLen, arg.ref)
+		}
+		cmp := c.currentBlock.NewICmp(enum.IPredEQ, lenCall, constant.NewInt(types.I64, 0))
+		return cgValue{ref: cmp, tip: TipoBooleano}, nil
+	}
+
+	// Built-in: primero(l) / ultimo(l) -> elemento. En lista vacía el
+	// runtime lanza IndexError capturable (índice 0 o -1 fuera de rango).
+	if nombre == "primero" || nombre == "ultimo" {
+		if len(n.Hijos) != 1 {
+			return cgValue{}, fmt.Errorf("línea %d: '%s' espera exactamente 1 argumento (la lista)", n.Linea, nombre)
+		}
+		base, err := c.emitirExpr(n.Hijos[0], nil)
+		if err != nil {
+			return cgValue{}, err
+		}
+		listaTipo, ok := base.tip.(*TipoLista)
+		if !ok {
+			return cgValue{}, fmt.Errorf("línea %d: '%s' espera una lista, se encontró %s", n.Linea, nombre, base.tip)
+		}
+		var idxRef value.Value
+		if nombre == "primero" {
+			idxRef = constant.NewInt(types.I64, 0)
+		} else {
+			listPtr := c.currentBlock.NewBitCast(base.ref, types.NewPointer(types.I8))
+			largo := c.currentBlock.NewCall(c.rtListLen, listPtr)
+			idxRef = c.currentBlock.NewSub(largo, constant.NewInt(types.I64, 1))
+		}
+		return c.leerElementoLista(base, listaTipo, idxRef, int64(n.Linea))
+	}
+
+	// Built-in: insertar(lista, indice, elemento). Muta EN EL LUGAR y
+	// devuelve la MISMA lista: valen 'insertar(l, i, x)' y
+	// 'l = insertar(l, i, x)'. La original cambia (0..len).
+	if nombre == "insertar" {
+		if len(n.Hijos) != 3 {
+			return cgValue{}, fmt.Errorf("línea %d: 'insertar' espera exactamente 3 argumentos (lista, índice y elemento)", n.Linea)
+		}
+		lista, err := c.emitirExpr(n.Hijos[0], nil)
+		if err != nil {
+			return cgValue{}, err
+		}
+		listaTipo, ok := lista.tip.(*TipoLista)
+		if !ok {
+			return cgValue{}, fmt.Errorf("línea %d: 'insertar' espera una lista como primer argumento, se encontró %s", n.Linea, lista.tip)
+		}
+		indice, err := c.emitirExpr(n.Hijos[1], nil)
+		if err != nil {
+			return cgValue{}, err
+		}
+		if !indice.tip.Igual(TipoEntero) {
+			return cgValue{}, fmt.Errorf("línea %d: el índice de 'insertar' debe ser entero, se encontró %s", n.Linea, indice.tip)
+		}
+		elem, err := c.emitirExpr(n.Hijos[2], nil)
+		if err != nil {
+			return cgValue{}, err
+		}
+		if !elem.tip.Igual(listaTipo.Elemento) {
+			return cgValue{}, fmt.Errorf("línea %d: el elemento de 'insertar' debe ser %s, se encontró %s", n.Linea, listaTipo.Elemento, elem.tip)
+		}
+		return c.emitirInsertar(lista, listaTipo, indice, elem, int64(n.Linea))
+	}
+
+	// Built-in: quitar(lista, indice). Muta EN EL LUGAR y devuelve la
+	// MISMA lista: valen 'quitar(l, i)' y 'l = quitar(l, i)'.
+	if nombre == "quitar" {
+		if len(n.Hijos) != 2 {
+			return cgValue{}, fmt.Errorf("línea %d: 'quitar' espera exactamente 2 argumentos (lista e índice)", n.Linea)
+		}
+		lista, err := c.emitirExpr(n.Hijos[0], nil)
+		if err != nil {
+			return cgValue{}, err
+		}
+		listaTipo, ok := lista.tip.(*TipoLista)
+		if !ok {
+			return cgValue{}, fmt.Errorf("línea %d: 'quitar' espera una lista como primer argumento, se encontró %s", n.Linea, lista.tip)
+		}
+		indice, err := c.emitirExpr(n.Hijos[1], nil)
+		if err != nil {
+			return cgValue{}, err
+		}
+		if !indice.tip.Igual(TipoEntero) {
+			return cgValue{}, fmt.Errorf("línea %d: el índice de 'quitar' debe ser entero, se encontró %s", n.Linea, indice.tip)
+		}
+		listPtr := c.currentBlock.NewBitCast(lista.ref, types.NewPointer(types.I8))
+		lineaVal := constant.NewInt(types.I64, int64(n.Linea))
+		var call value.Value
+		if esElementoGenerico(listaTipo.Elemento) {
+			desc, err := c.descriptorElemento(listaTipo.Elemento)
+			if err != nil {
+				return cgValue{}, fmt.Errorf("línea %d: %v", n.Linea, err)
+			}
+			call = c.currentBlock.NewCall(c.rtListRemoveGen, listPtr, indice.ref, desc, lineaVal)
+		} else {
+			code := tipoCode(listaTipo.Elemento)
+			if code == -1 {
+				return cgValue{}, fmt.Errorf("línea %d: 'quitar' no soportado para listas de %s", n.Linea, listaTipo.Elemento)
+			}
+			call = c.currentBlock.NewCall(c.rtListRemove, listPtr, indice.ref, constant.NewInt(types.I32, int64(code)), lineaVal)
+		}
+		// Sin liberar el operando: es el mismo objeto que el resultado.
+		return cgValue{ref: call, tip: lista.tip, compartido: lista.compartido}, nil
 	}
 
 	// Built-in: range
@@ -2908,6 +4505,18 @@ func (c *Codegen) emitirLlamada(n *Nodo) (cgValue, error) {
 		// FIX 2.1b: si 'prompt' era una cadena temporal (p. ej.
 		// 'leer("a" + "b")'), 'leer' ya la usó y nadie más la referencia.
 		c.liberarOperandoFrescoSiHeap(prompt)
+		if expected != nil && expected.Igual(TipoEntero) {
+			res := c.currentBlock.NewCall(c.rtStringToI64, call,
+				constant.NewInt(types.I64, int64(n.Linea)))
+			c.currentBlock.NewCall(c.rtLiberarCadena, call)
+			return cgValue{ref: res, tip: TipoEntero}, nil
+		}
+		if expected != nil && expected.Igual(TipoDecimal) {
+			res := c.currentBlock.NewCall(c.rtStringToF64, call,
+				constant.NewInt(types.I64, int64(n.Linea)))
+			c.currentBlock.NewCall(c.rtLiberarCadena, call)
+			return cgValue{ref: res, tip: TipoDecimal}, nil
+		}
 		return cgValue{ref: call, tip: TipoCadena}, nil
 	}
 
@@ -2931,14 +4540,17 @@ func (c *Codegen) emitirLlamada(n *Nodo) (cgValue, error) {
 				if listTipo, ok := v.tip.(*TipoLista); ok {
 					elemTipo := listTipo.Elemento
 					code := tipoCode(elemTipo)
+					if esElementoGenerico(elemTipo) && puedeImprimirLista(listTipo) {
+						code = tipoCodeGenerico // lista de listas: se imprime sola
+					}
 					if code == -1 {
-						return cgValue{}, fmt.Errorf("línea %d: imprimir listas de %s no soportado", n.Linea, elemTipo)
+						return cgValue{}, fmt.Errorf("línea %d: imprimir listas de %s no soportado (las estructuras no se imprimen: recorré la lista con 'para')", n.Linea, elemTipo)
 					}
 					listPtr := c.currentBlock.NewBitCast(v.ref, types.NewPointer(types.I8))
 					c.currentBlock.NewCall(c.rtPrintList, listPtr, constant.NewInt(types.I32, int64(code)))
 				} else if dictTipo, ok := v.tip.(*TipoDiccionario); ok {
 					claveCode := tipoCode(dictTipo.Clave)
-					valorCode := tipoCode(dictTipo.Valor)
+					valorCode := codigoElemento(dictTipo.Valor)
 					if claveCode == -1 || valorCode == -1 {
 						return cgValue{}, fmt.Errorf("línea %d: imprimir diccionario con tipos no soportados", n.Linea)
 					}
@@ -2971,8 +4583,11 @@ func (c *Codegen) emitirLlamada(n *Nodo) (cgValue, error) {
 		case v.tip.Igual(TipoCadena):
 			c.currentBlock.NewCall(c.rtLiberarCadena, v.ref)
 		default:
-			if listTipo, ok := v.tip.(*TipoLista); ok {
-				code := tipoCode(listTipo.Elemento)
+			if st, ok := v.tip.(*TipoEstructura); ok {
+				// Libera UNA referencia de cada valor heap que contiene.
+				c.emitirLiberarEnValor(v.ref, st)
+			} else if listTipo, ok := v.tip.(*TipoLista); ok {
+				code := codigoElemento(listTipo.Elemento)
 				if code == -1 {
 					return cgValue{}, fmt.Errorf("línea %d: liberar listas de %s no soportado", n.Linea, listTipo.Elemento)
 				}
@@ -2980,7 +4595,7 @@ func (c *Codegen) emitirLlamada(n *Nodo) (cgValue, error) {
 				c.currentBlock.NewCall(c.rtLiberarLista, listPtr, constant.NewInt(types.I32, int64(code)))
 			} else if dictTipo, ok := v.tip.(*TipoDiccionario); ok {
 				claveCode := tipoCode(dictTipo.Clave)
-				valorCode := tipoCode(dictTipo.Valor)
+				valorCode := codigoElemento(dictTipo.Valor)
 				if claveCode == -1 || valorCode == -1 {
 					return cgValue{}, fmt.Errorf("línea %d: liberar diccionario con tipos no soportados", n.Linea)
 				}
@@ -2998,14 +4613,20 @@ func (c *Codegen) emitirLlamada(n *Nodo) (cgValue, error) {
 		// liberada). wini_print_string/wini_print_list/wini_print_dict
 		// ya contemplan el puntero nulo y muestran "<nulo>"/"[]"/"{}"
 		// en lugar de hacer segfault.
-		if n.Hijos[0].Tipo == "IDENTIFICADOR" {
-			if nombreVar, ok := n.Hijos[0].Valor.(string); ok {
-				if variable, ok := c.lookupVar(nombreVar); ok {
-					nullPtr := constant.NewNull(types.NewPointer(types.I8))
-					c.currentBlock.NewStore(nullPtr, variable.ptr)
-				}
-			}
-		}
+		// Si el argumento es una variable simple, anulamos su puntero
+		// justo después de liberar la memoria (use-after-free se
+		// convierte en "puntero nulo" en vez de acceso a memoria ya
+		// liberada). wini_print_string/wini_print_list/wini_print_dict
+		// ya contemplan el puntero nulo y muestran "<nulo>"/"[]"/"{}"
+		// en lugar de hacer segfault.
+		//
+		// No alcanza con anular una variable: 'liberar(l[0])' deja la
+		// ranura del elemento apuntando a memoria ya liberada, y un
+		// 'liberar(l)' posterior la vuelve a liberar (doble free,
+		// confirmado con AddressSanitizer). Por eso, cuando el argumento
+		// es una indexación, hay que ir a escribirle NULL en la ranura
+		// del contenedor, no en una variable.
+		c.anularRanuraLiberada(n)
 		return cgValue{ref: nil, tip: nil}, nil
 	}
 
@@ -3036,7 +4657,7 @@ func (c *Codegen) emitirLlamada(n *Nodo) (cgValue, error) {
 		arrType := g.ContentType.(*types.ArrayType)
 		gep := c.currentBlock.NewGetElementPtr(arrType, g,
 			constant.NewInt(types.I64, 0), constant.NewInt(types.I64, 0))
-		inst := c.currentBlock.NewCall(c.rtStringNew, gep, constant.NewInt(types.I64, int64(len([]byte(nombreTipo)))))
+		inst := c.currentBlock.NewCall(c.rtStringNew, gep, constant.NewInt(types.I64, int64(len(nombreTipo))))
 		return cgValue{ref: inst, tip: TipoCadena}, nil
 	}
 
@@ -3054,10 +4675,19 @@ func (c *Codegen) emitirLlamada(n *Nodo) (cgValue, error) {
 		return cgValue{}, fmt.Errorf("línea %d: función '%s' no soportada o no declarada", n.Linea, nombre)
 	}
 
+	// El último parámetro variádico "a la Wini" ('*nombre:tipo') agrupa en
+	// realidad 0 o más argumentos posicionales sueltos en una lista, así
+	// que no cuenta como parámetro que recibe exactamente un argumento
+	// (mismo criterio que el verificador). ultimoEsLista se calcula sobre
+	// el último parámetro REAL para que una firma variádica pura active la
+	// recolección de los argumentos sueltos.
 	numFijos := len(firma.Parametros)
+	if firma.EsVariadico {
+		numFijos--
+	}
 	var ultimoEsLista *TipoLista
-	if numFijos > 0 {
-		ultimoEsLista, _ = firma.Parametros[numFijos-1].(*TipoLista)
+	if len(firma.Parametros) > 0 {
+		ultimoEsLista, _ = firma.Parametros[len(firma.Parametros)-1].(*TipoLista)
 	}
 	// aceptaExtra: puede recibir más argumentos posicionales que
 	// firma.Parametros, ya sea porque el último parámetro es una lista
@@ -3072,16 +4702,84 @@ func (c *Codegen) emitirLlamada(n *Nodo) (cgValue, error) {
 		return cgValue{}, fmt.Errorf("línea %d: llamada a '%s' espera entre %d y %d argumentos, se encontraron %d", n.Linea, nombre, firma.Requeridos, numFijos, len(n.Hijos))
 	}
 
-	// recolectaEnLista: hay más argumentos que parámetros fijos Y el
-	// último parámetro es una lista, así que esos excedentes son
-	// elementos sueltos a recolectar en una lista real antes de llamar
-	// (en vez del caso normal de pasar directamente una única lista ya
-	// construida, que sigue andando cuando la cantidad de argumentos
-	// coincide exactamente con la cantidad de parámetros).
-	recolectaEnLista := ultimoEsLista != nil && len(n.Hijos) > numFijos
+	// recolectaEnLista vale si los argumentos en la posición del último
+	// parámetro (que es una lista) se recolectan en UNA lista real antes de
+	// llamar. Para una firma variádica 'a la Wini' eso es siempre cierto:
+	// incluso sin ningún argumento suelto hay que construir y pasar una
+	// lista VACÍA, porque el parámetro es una lista de todos modos y la
+	// función va a iterarla (y liberarla) al entrar. Antes solo se
+	// recolectaba cuando sobraban argumentos, así que 'f()' llamaba a la
+	// función sin pasarle el puntero de lista y el callee terminaba
+	// iterando un NULL (SIGSEGV).
+	recolectaEnLista := ultimoEsLista != nil && (firma.EsVariadico || len(n.Hijos) > numFijos)
+	// Índice real del último parámetro de la firma: coincide con numFijos
+	// salvo que haya un variádico al final (que ocupa la última posición).
+	idxUltimoParam := len(firma.Parametros) - 1
 	limiteFijos := numFijos
 	if recolectaEnLista {
-		limiteFijos = numFijos - 1
+		limiteFijos = idxUltimoParam
+	}
+
+	// --- Argumentos nombrados ('f(b = 1, a = 2)') ---
+	// Reordenar los nodos de argumentos a la posición del parámetro cuyo
+	// nombre trajeron, para que el resto del pipeline (conteo de
+	// requeridos, flags "dado", defaults dentro de la función) siga
+	// funcionando sin cambios, como si hubieran venido en orden. El
+	// verificador ya garantizó: nombres válidos, sin duplicados, y
+	// posicionales antes que nombrados; acá solo hay que mapear cada
+	// ARG_NOMBRADO al índice de su parámetro y rellenar los posiciones
+	// restantes con los posicionales, en orden. Las posiciones de
+	// parámetros omitidos quedan en nil: el bucle de abajo las trata
+	// como "argumento no pasado" (placeholder + flag "dado" en falso),
+	// igual que con los omitidos posicionales.
+	// El reordenamiento de argumentos con nombre se saltea si la función es
+	// variádica de cualquier clase: en la "a la Wini" los excedentes se
+	// recolectan en una lista (y un nombrado no tiene a qué posición
+	// asignarse), y en la variádica a la C los '...' no tienen parámetro
+	// asociado. La condición va sobre firma.EsVariadico, no sobre
+	// 'ultimoEsLista': un parámetro lista que NO es variádico sí acepta
+	// argumentos con nombre, y antes se le rechazaban con un error
+	// engañoso.
+	if !firma.VariadicoC && !firma.EsVariadico {
+		tieneNombrados := false
+		for _, a := range n.Hijos {
+			if a != nil && a.Tipo == "ARG_NOMBRADO" {
+				tieneNombrados = true
+				break
+			}
+		}
+		if tieneNombrados {
+			reordenados := make([]*Nodo, numFijos)
+			asignados := make([]bool, numFijos)
+			for _, a := range n.Hijos {
+				if a.Tipo == "ARG_NOMBRADO" {
+					nombreArg, _ := a.Valor.(string)
+					idx := firma.nombreAIndice(nombreArg)
+					if idx == -1 {
+						return cgValue{}, fmt.Errorf("línea %d: '%s' no es un parámetro de '%s'", a.Linea, nombreArg, nombre)
+					}
+					reordenados[idx] = a.Hijos[0]
+					asignados[idx] = true
+					continue
+				}
+				// Posicional: primera posición aún libre (el verificador
+				// ya garantizó que no hay posicionales después de nombrados,
+				// pero esto también funciona si llegaran desordenados).
+				colocado := false
+				for j := 0; j < numFijos; j++ {
+					if !asignados[j] {
+						reordenados[j] = a
+						asignados[j] = true
+						colocado = true
+						break
+					}
+				}
+				if !colocado {
+					return cgValue{}, fmt.Errorf("línea %d: demasiados argumentos en la llamada a '%s'", a.Linea, nombre)
+				}
+			}
+			n.Hijos = reordenados
+		}
 	}
 
 	// args trae un valor por cada parámetro (real si el llamador lo pasó,
@@ -3092,10 +4790,10 @@ func (c *Codegen) emitirLlamada(n *Nodo) (cgValue, error) {
 	dados := make([]value.Value, 0, numFijos-firma.Requeridos)
 	for i := 0; i < limiteFijos; i++ {
 		tieneDefault := i >= firma.Requeridos
-		if i < len(n.Hijos) {
+		if i < len(n.Hijos) && n.Hijos[i] != nil {
 			arg := n.Hijos[i]
 			if arg.Tipo == "ARG_NOMBRADO" {
-				return cgValue{}, fmt.Errorf("línea %d: la base mínima aún no soporta argumentos nombrados en LLVM", arg.Linea)
+				return cgValue{}, fmt.Errorf("línea %d: argumento con nombre inesperado en la llamada a '%s'", arg.Linea, nombre)
 			}
 			v, err := c.emitirExpr(arg, firma.Parametros[i])
 			if err != nil {
@@ -3109,7 +4807,13 @@ func (c *Codegen) emitirLlamada(n *Nodo) (cgValue, error) {
 			// argumento viene de una variable existente, retenemos una
 			// referencia extra para ella, o la función terminaría
 			// liberando la única referencia que tenía nuestra variable.
-			v = c.retenerSiCompartido(v)
+			// Se usa retenerParaAlmacenar (y no retenerSiCompartido) porque
+			// una estructura no es un valor heap en sí mismo pero sí tiene
+			// campos heap: hay que retenerlos a todos para que la copia que
+			// se le pasa al llamado tenga sus propios dueños. Sin esto,
+			// el llamado liberaba la cadena/lista que el llamador seguía
+			// usando (use-after-free).
+			v = c.retenerParaAlmacenar(v)
 			args = append(args, v.ref)
 			if tieneDefault {
 				dados = append(dados, constant.NewBool(true))
@@ -3125,10 +4829,10 @@ func (c *Codegen) emitirLlamada(n *Nodo) (cgValue, error) {
 
 	if recolectaEnLista {
 		elemTipo := ultimoEsLista.Elemento
-		elementos := make([]cgValue, 0, len(n.Hijos)-(numFijos-1))
-		for _, arg := range n.Hijos[numFijos-1:] {
+		elementos := make([]cgValue, 0, len(n.Hijos)-idxUltimoParam)
+		for _, arg := range n.Hijos[idxUltimoParam:] {
 			if arg.Tipo == "ARG_NOMBRADO" {
-				return cgValue{}, fmt.Errorf("línea %d: la base mínima aún no soporta argumentos nombrados en LLVM", arg.Linea)
+				return cgValue{}, fmt.Errorf("línea %d: argumento con nombre inesperado en la llamada variádica a '%s'", arg.Linea, nombre)
 			}
 			v, err := c.emitirExpr(arg, elemTipo)
 			if err != nil {
@@ -3155,7 +4859,7 @@ func (c *Codegen) emitirLlamada(n *Nodo) (cgValue, error) {
 	if firma.VariadicoC {
 		for _, arg := range n.Hijos[numFijos:] {
 			if arg.Tipo == "ARG_NOMBRADO" {
-				return cgValue{}, fmt.Errorf("línea %d: la base mínima aún no soporta argumentos nombrados en LLVM", arg.Linea)
+				return cgValue{}, fmt.Errorf("línea %d: argumento con nombre inesperado en la llamada externa a '%s'", arg.Linea, nombre)
 			}
 			v, err := c.emitirExpr(arg, nil)
 			if err != nil {
@@ -3169,6 +4873,320 @@ func (c *Codegen) emitirLlamada(n *Nodo) (cgValue, error) {
 	callee := c.llvmFuncs[nombre]
 	call := c.currentBlock.NewCall(callee, args...)
 	return cgValue{ref: call, tip: firma.Retorno}, nil
+}
+
+// registrarTemporal anota una referencia heap creada a mitad del cálculo de
+// una expresión, que debe devolverse si esa expresión termina lanzando.
+func (c *Codegen) registrarTemporal(ref value.Value, tip Tipo) int {
+	c.temporalesEnCurso = append(c.temporalesEnCurso, temporalEnCurso{ref: ref, tip: tip})
+	return len(c.temporalesEnCurso) - 1
+}
+
+func (c *Codegen) actualizarTemporal(idx int, ref value.Value) {
+	if idx >= 0 && idx < len(c.temporalesEnCurso) {
+		c.temporalesEnCurso[idx].ref = ref
+	}
+}
+
+// desregistrarTemporal marca que el temporal ya tiene dueño y no debe
+// liberarse en un 'lanzar' posterior.
+func (c *Codegen) desregistrarTemporal(idx int) {
+	if idx >= 0 && idx < len(c.temporalesEnCurso) {
+		c.temporalesEnCurso[idx].ref = nil
+	}
+}
+
+// liberarTemporalesEnCurso devuelve las referencias heap que se construyeron
+// a mitad de expresiones que no llegaron a terminar. Se llama justo antes de
+// un longjmp: después del salto, esa ejecución nunca vuelve, así que es el
+// único punto donde todavía somos dueños de ellas.
+func (c *Codegen) liberarTemporalesEnCurso() {
+	for _, t := range c.temporalesEnCurso {
+		if t.ref != nil {
+			c.emitirLiberarValor(t.ref, t.tip)
+		}
+	}
+	c.temporalesEnCurso = nil
+}
+
+// emitirEnLista implementa 'elemento en lista': recorre la lista
+// comparando cada elemento con el buscado y devuelve verdadero en cuanto
+// encuentra uno. Cubre los tipos primitivos (entero, decimal, booleano y
+// cadena), que son los únicos que el verificador admite como elemento de
+// una lista en una expresión 'en'.
+func (c *Codegen) emitirEnLista(elemento, contenedor cgValue, listaTipo *TipoLista, linea int) (cgValue, error) {
+	suf, _, ok := primSuffix(listaTipo.Elemento)
+	if !ok {
+		return cgValue{}, fmt.Errorf("línea %d: 'en' sobre listas de %s no soportado", linea, listaTipo.Elemento)
+	}
+	var getFn *ir.Func
+	switch suf {
+	case "i64":
+		getFn = c.rtListGetI64
+	case "f64":
+		getFn = c.rtListGetF64
+	case "i1":
+		getFn = c.rtListGetI1
+	case "str":
+		getFn = c.rtListGetStr
+	}
+	if getFn == nil {
+		return cgValue{}, fmt.Errorf("línea %d: tipo de lista (%s) no soportado para 'en'", linea, suf)
+	}
+
+	listPtr := c.currentBlock.NewBitCast(contenedor.ref, types.NewPointer(types.I8))
+	idxPtr := c.initBlock.NewAlloca(types.I64)
+	c.currentBlock.NewStore(constant.NewInt(types.I64, 0), idxPtr)
+	encontradoPtr := c.initBlock.NewAlloca(types.I1)
+	c.currentBlock.NewStore(constant.NewBool(false), encontradoPtr)
+
+	condBlock := c.currentFunc.NewBlock(c.newLabel("en.cond"))
+	cuerpoBlock := c.currentFunc.NewBlock(c.newLabel("en.body"))
+	sigueBlock := c.currentFunc.NewBlock(c.newLabel("en.sigue"))
+	endBlock := c.currentFunc.NewBlock(c.newLabel("en.end"))
+	c.currentBlock.NewBr(condBlock)
+
+	c.currentBlock = condBlock
+	idxVal := c.currentBlock.NewLoad(types.I64, idxPtr)
+	lenVal := c.currentBlock.NewCall(c.rtListLen, listPtr)
+	iMenor := c.currentBlock.NewICmp(enum.IPredSLT, idxVal, lenVal)
+	yaEncontrado := c.currentBlock.NewLoad(types.I1, encontradoPtr)
+	// Se sigue mirando mientras queden elementos por recorrer Y todavía no
+	// se haya encontrado el buscado. Si lo inverso (seguidor = i < len), el
+	// bucle nunca terminaría al encontrar el elemento.
+	noEncontrado := c.currentBlock.NewXor(yaEncontrado, constant.NewInt(types.I1, 1))
+	seguir := c.currentBlock.NewAnd(iMenor, noEncontrado)
+	c.currentBlock.NewCondBr(seguir, cuerpoBlock, endBlock)
+
+	c.currentBlock = cuerpoBlock
+	idxVal2 := c.currentBlock.NewLoad(types.I64, idxPtr)
+	lineaVal := constant.NewInt(types.I64, int64(linea))
+	var actual value.Value
+	switch suf {
+	case "i64":
+		actual = c.currentBlock.NewCall(getFn, listPtr, idxVal2, lineaVal)
+	case "f64":
+		actual = c.currentBlock.NewCall(getFn, listPtr, idxVal2, lineaVal)
+	case "i1":
+		actual = c.currentBlock.NewCall(getFn, listPtr, idxVal2, lineaVal)
+	case "str":
+		actual = c.currentBlock.NewCall(getFn, listPtr, idxVal2, lineaVal)
+	}
+	var iguales value.Value
+	switch suf {
+	case "f64":
+		iguales = c.currentBlock.NewFCmp(enum.FPredOEQ, actual, elemento.ref)
+	case "i1":
+		// Los booleanos ya son i1 tanto en la lista como en el operando
+		// (wini_list_get_i1 devuelve i1), así que la comparación es directa.
+		iguales = c.currentBlock.NewICmp(enum.IPredEQ, actual, elemento.ref)
+	case "str":
+		// Las cadenas dentro de una lista son PUNTEROS (WiniString*), así
+		// que compararlos con '==' solo daría true si fuera literalmente
+		// el mismo objeto: "dos" en ["uno","dos"] daba falso. Hay que
+		// comparar el CONTENIDO, que es lo que hace wini_string_eq (el
+		// mismo que usa el operador '==' de cadenas en emitirComparacion).
+		iguales = c.currentBlock.NewCall(c.rtStringEq, actual, elemento.ref)
+	default:
+		iguales = c.currentBlock.NewICmp(enum.IPredEQ, actual, elemento.ref)
+	}
+	encontradoPtr2 := c.currentBlock.NewLoad(types.I1, encontradoPtr)
+	nuevoEncontrado := c.currentBlock.NewOr(encontradoPtr2, iguales)
+	c.currentBlock.NewStore(nuevoEncontrado, encontradoPtr)
+	idxSumado := c.currentBlock.NewAdd(c.currentBlock.NewLoad(types.I64, idxPtr), constant.NewInt(types.I64, 1))
+	c.currentBlock.NewStore(idxSumado, idxPtr)
+	c.currentBlock.NewBr(sigueBlock)
+
+	c.currentBlock = sigueBlock
+	c.currentBlock.NewBr(condBlock)
+
+	c.currentBlock = endBlock
+	resultado := c.currentBlock.NewLoad(types.I1, encontradoPtr)
+
+	// 'elemento' y 'contenedor' solo se leen para comparar: si eran
+	// temporales recién construidos, se liberan acá (mismo criterio que en
+	// la versión de diccionario).
+	if esTipoHeap(elemento.tip) && !elemento.compartido {
+		c.emitirLiberarValor(elemento.ref, elemento.tip)
+	}
+	c.liberarOperandoFrescoSiHeap(contenedor)
+	return cgValue{ref: resultado, tip: TipoBooleano}, nil
+}
+
+// anularRanuraLiberada escribe NULL en la ranura de la que 'liberar' acaba
+// de soltar la referencia.
+//
+// El builtin 'liberar' devuelve una referencia al llamador (la que venía
+// de la variable, el elemento o el campo), pero la variable, el elemento o
+// el campo siguen apuntando a memoria que ya se liberó. Con una variable
+// sola eso se tapaba poniendo NULL en su alloca; con 'liberar(l[0])' o
+// 'liberar(d[k])' o 'liberar(p.s)' no había ninguna escritura, así que un
+// 'liberar(l)' posterior liberaba la MISMA memoria otra vez (heap
+// use-after-free confirmado con AddressSanitizer).
+func (c *Codegen) anularRanuraLiberada(nodoLlamada *Nodo) {
+	if len(nodoLlamada.Hijos) == 0 {
+		return
+	}
+	arg := nodoLlamada.Hijos[0]
+	switch arg.Tipo {
+	case "IDENTIFICADOR":
+		nombre, ok := arg.Valor.(string)
+		if !ok {
+			return
+		}
+		variable, ok := c.lookupVar(nombre)
+		if !ok {
+			return
+		}
+		if st, esEstructura := variable.tip.(*TipoEstructura); esEstructura {
+			// Una estructura no es un puntero: se la deja en cero (campos
+			// heap en NULL, que liberar tolera).
+			c.currentBlock.NewStore(constant.NewZeroInitializer(c.llvmType(st)), variable.ptr)
+			return
+		}
+		c.currentBlock.NewStore(constant.NewNull(types.NewPointer(types.I8)), variable.ptr)
+
+	case "INDEXACION":
+		// 'liberar(l[i])' / 'liberar(d[clave])': hay que dejarle NULL a la
+		// ranura DENTRO del contenedor, que es lo que sigue teniendo la
+		// referencia colgando.
+		if len(arg.Hijos) != 2 {
+			return
+		}
+		base, err := c.emitirExpr(arg.Hijos[0], nil)
+		if err != nil {
+			return
+		}
+		indice, err := c.emitirExpr(arg.Hijos[1], nil)
+		if err != nil {
+			return
+		}
+		switch cont := base.tip.(type) {
+		case *TipoLista:
+			// Para una lista de cadenas, los elementos son punteros
+			// (WiniString*). Se pide la dirección de la ranura con
+			// wini_list_slot y se le escribe NULL, de modo que un
+			// 'liberar(l)' posterior ya no encuentre la referencia
+			// colgando. Para elementos que no son puntero no hay nada que
+			// anular (y el verificador ya rechaza liberarlos).
+			if !cont.Elemento.Igual(TipoCadena) || !indice.tip.Igual(TipoEntero) {
+				return
+			}
+			listPtr := c.currentBlock.NewBitCast(base.ref, types.NewPointer(types.I8))
+			// wini_list_slot_str devuelve directamente la dirección de la
+			// ranura (i8**), lista en la que escribir NULL.
+			slot := c.currentBlock.NewCall(c.rtListSlotStr, listPtr, indice.ref,
+				constant.NewInt(types.I64, int64(arg.Linea)))
+			c.currentBlock.NewStore(constant.NewNull(types.NewPointer(types.I8)), slot)
+
+		case *TipoDiccionario:
+			// Un diccionario se busca por valor de clave, no por ranura, así
+			// que no hay dirección a la que escribirle NULL. Se anula la
+			// ranura del VALOR con la función de búsqueda genérica del
+			// runtime, que devuelve la dirección (o NULL si no está la
+			// clave, en cuyo caso no hay nada que liberar).
+			//
+			// Valores genéricos (lista o estructura): mismo esquema con
+			// slot_gen (una por tipo de clave). A diferencia de la variante
+			// para cadenas, slot_gen LANZA KeyError si la clave falta
+			// (igual que leer d[clave]): liberar una clave inexistente de
+			// un diccionario genérico es un error, no un no-op.
+			if esElementoGenerico(cont.Valor) {
+				kSuf, _, ok := primSuffix(cont.Clave)
+				if !ok {
+					return
+				}
+				desc, err := c.descriptorElemento(cont.Valor)
+				if err != nil {
+					return
+				}
+				slotFn, ok := c.rtDictSlotGen[kSuf]
+				if !ok {
+					return
+				}
+				// slot_gen consume una referencia de claves cadena (igual
+				// que get_str): retener antes si viene de una variable.
+				if esTipoHeap(indice.tip) && indice.compartido {
+					indice.ref = c.emitirRetenerValor(indice.ref, indice.tip)
+				}
+				basePtr := c.currentBlock.NewBitCast(base.ref, types.NewPointer(types.I8))
+				slot := c.currentBlock.NewCall(slotFn, basePtr, indice.ref, desc,
+					constant.NewInt(types.I64, int64(arg.Linea)))
+				if !c.blockTerminated {
+					esDistinto := c.currentBlock.NewICmp(enum.IPredNE, slot,
+						constant.NewNull(types.NewPointer(types.I8)))
+					siHay := c.currentFunc.NewBlock(c.newLabel("liberar.dict.slot"))
+					despues := c.currentFunc.NewBlock(c.newLabel("liberar.dict.slot.fin"))
+					c.currentBlock.NewCondBr(esDistinto, siHay, despues)
+					c.currentBlock = siHay
+					// 'slot' es la dirección opaca (i8*) de la ranura: se
+					// castea al tipo de ranura (puntero para listas, struct
+					// para estructuras) antes de anularla.
+					if _, esEstructura := cont.Valor.(*TipoEstructura); esEstructura {
+						tipado := c.currentBlock.NewBitCast(slot, types.NewPointer(c.llvmType(cont.Valor)))
+						c.currentBlock.NewStore(constant.NewZeroInitializer(c.llvmType(cont.Valor)), tipado)
+					} else {
+						ranura := c.currentBlock.NewBitCast(slot, types.NewPointer(types.NewPointer(types.I8)))
+						c.currentBlock.NewStore(constant.NewNull(types.NewPointer(types.I8)), ranura)
+					}
+					c.currentBlock.NewBr(despues)
+					c.currentBlock = despues
+				}
+				return
+			}
+			if !cont.Valor.Igual(TipoCadena) {
+				return
+			}
+			slot := c.currentBlock.NewCall(c.rtDictSlotStr, base.ref, indice.ref)
+			if !c.blockTerminated {
+				esDistinto := c.currentBlock.NewICmp(enum.IPredNE, slot,
+					constant.NewNull(types.NewPointer(types.I8)))
+				siHay := c.currentFunc.NewBlock(c.newLabel("liberar.dict.slot"))
+				despues := c.currentFunc.NewBlock(c.newLabel("liberar.dict.slot.fin"))
+				c.currentBlock.NewCondBr(esDistinto, siHay, despues)
+				c.currentBlock = siHay
+				c.currentBlock.NewStore(constant.NewNull(types.NewPointer(types.I8)), slot)
+				c.currentBlock.NewBr(despues)
+				c.currentBlock = despues
+			}
+			// La expresión de índice evaluó una clave temporal ('d["a"]'
+			// construye la cadena "a" para buscar). Ya se usó para
+			// localizar la ranura, así que se devuelve su referencia: si no
+			// quedaba fugada una cadena por cada 'liberar(d[clave])'.
+			c.liberarOperandoFrescoSiHeap(indice)
+		}
+
+	case "ACCESO_ATRIBUTO":
+		// 'liberar(p.s)': la referencia colgante está en el campo de la
+		// estructura 'p'. Hay que escribirle NULL usando el alloca de la
+		// variable (el valor del campo por sí solo no es direccionable).
+		if len(arg.Hijos) != 1 {
+			return
+		}
+		nombreBase, ok := arg.Hijos[0].Valor.(string)
+		if !ok {
+			return
+		}
+		variable, ok := c.lookupVar(nombreBase)
+		if !ok {
+			return
+		}
+		st, ok := variable.tip.(*TipoEstructura)
+		if !ok {
+			return
+		}
+		nombreCampo, ok := arg.Valor.(string)
+		if !ok {
+			return
+		}
+		_, idx, ok := st.Campo(nombreCampo)
+		if !ok {
+			return
+		}
+		campoPtr := c.currentBlock.NewGetElementPtr(c.llvmType(st), variable.ptr,
+			constant.NewInt(types.I32, 0), constant.NewInt(types.I32, int64(idx)))
+		c.currentBlock.NewStore(constant.NewNull(types.NewPointer(types.I8)), campoPtr)
+	}
 }
 
 func (c *Codegen) emitirConversion(destino Tipo, arg *Nodo, linea int) (cgValue, error) {
@@ -3188,6 +5206,16 @@ func (c *Codegen) emitirConversion(destino Tipo, arg *Nodo, linea int) (cgValue,
 		return cgValue{ref: v.ref, tip: destino, compartido: v.compartido}, nil
 	}
 	switch {
+	case destino.Igual(TipoEntero) && v.tip.Igual(TipoCadena):
+		res := c.currentBlock.NewCall(c.rtStringToI64, v.ref,
+			constant.NewInt(types.I64, int64(linea)))
+		c.liberarOperandoFrescoSiHeap(v)
+		return cgValue{ref: res, tip: TipoEntero}, nil
+	case destino.Igual(TipoDecimal) && v.tip.Igual(TipoCadena):
+		res := c.currentBlock.NewCall(c.rtStringToF64, v.ref,
+			constant.NewInt(types.I64, int64(linea)))
+		c.liberarOperandoFrescoSiHeap(v)
+		return cgValue{ref: res, tip: TipoDecimal}, nil
 	case destino.Igual(TipoDecimal) && v.tip.Igual(TipoEntero):
 		res := c.currentBlock.NewSIToFP(v.ref, types.Double)
 		return cgValue{ref: res, tip: TipoDecimal}, nil
@@ -3370,4 +5398,37 @@ func (c *Codegen) safeName(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// buscarFuncion devuelve la función del módulo con ese nombre (declaración de
+// runtime, 'externa' o 'funcion' de Wini), o nil si no existe. Se usa para
+// detectar colisiones de símbolo antes de crear una declaración duplicada.
+func (c *Codegen) buscarFuncion(nombre string) *ir.Func {
+	// Índice nombre -> función. Antes era un escaneo lineal sobre
+	// c.module.Funcs, que ya trae ~200 'declare' del runtime más cada
+	// función del programa: llamarlo una vez por declaración convertía la
+	// generación en O(F²). El índice se construye una sola vez (el módulo
+	// no crece después de inicializar el codegen) y la búsqueda queda en
+	// O(1).
+	if c.funcionesPorNombre == nil {
+		c.funcionesPorNombre = make(map[string]*ir.Func, len(c.module.Funcs))
+		for _, f := range c.module.Funcs {
+			c.funcionesPorNombre[f.Name()] = f
+		}
+	}
+	return c.funcionesPorNombre[nombre]
+}
+
+// firmaLLVM arma el tipo de función LLVM (retorno + tipos de los
+// parámetros + variádico C) que tendría una declaración con esos parámetros.
+// Se usa solo para comparar firmas y decidir si una 'externa' puede reutilizar
+// una declaración ya existente.
+func firmaLLVM(retorno types.Type, params []*ir.Param, variadico bool) *types.FuncType {
+	tipos := make([]types.Type, len(params))
+	for i, p := range params {
+		tipos[i] = p.Type()
+	}
+	sig := types.NewFunc(retorno, tipos...)
+	sig.Variadic = variadico
+	return sig
 }

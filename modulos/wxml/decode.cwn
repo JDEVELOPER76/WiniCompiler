@@ -1,0 +1,337 @@
+# =====================================================================
+# decode.cwn — parser XML texto -> XmlNodo (Wini puro)
+# ---------------------------------------------------------------------
+# Los tipos XmlNodo/XmlResultado vienen de tipos.cwn y el desescape
+# de escape.cwn (declarados como dependencias reales del módulo).
+#
+# Entrada: xml_parse(texto) -> XmlResultado.
+# Si ok es falso, error trae "mensaje en pos N" y valor es un nodo
+# vacío de relleno (etiqueta "").
+#
+# Subconjunto soportado:
+# - Un único elemento raíz (como XML bien formado).
+# - Atributos con "..." o '...' (con entidades).
+# - <et/> self-closing, <et>texto</et>, anidados, mixtos.
+# - Prólogo <?xml ...?>, instrucciones <?...?>, comentarios <!-- -->,
+#   CDATA <![CDATA[...]]> (literal, sin desescapar) y <!DOCTYPE ...>
+#   u otras <!...>: se saltan antes/después de la raíz y entre hijos.
+# - Entidades &amp; &lt; &gt; &quot; &apos; &#65; &#x41; (ver escape).
+#
+# No se validan namespaces ni DTD: solo bien-formado sintáctico.
+# El nombre permite letras, "_", ":", y luego dígitos, "-", ".".
+# =====================================================================
+
+importar "escape" como esc
+importar "tipos"
+
+# --- utilidades de bajo nivel ------------------------------------------
+
+funcion xml_dec_es_espacio(ch: cadena) -> booleano:
+    si ch == " ":
+        retornar verdadero
+    si ch == "\n":
+        retornar verdadero
+    si ch == "\r":
+        retornar verdadero
+    si ch == "\t":
+        retornar verdadero
+    retornar falso
+
+funcion xml_dec_saltar(texto: cadena, pos: entero) -> entero:
+    entero n = longitud(texto)
+    mientras pos < n:
+        si xml_dec_es_espacio(texto[pos]):
+            pos = pos + 1
+        demas:
+            romper
+    retornar pos
+
+funcion xml_dec_cortar(texto: cadena, inicio: entero, fin: entero) -> cadena:
+    cadena r = ""
+    entero i = inicio
+    mientras i < fin:
+        r = r + texto[i]
+        i = i + 1
+    retornar r
+
+# Busca 'aguja' desde 'desde'. Devuelve el índice o -1.
+funcion xml_dec_buscar(texto: cadena, desde: entero, aguja: cadena) -> entero:
+    entero n = longitud(texto)
+    entero m = longitud(aguja)
+    si m == 0:
+        retornar desde
+    si desde < 0:
+        desde = 0
+    entero i = desde
+    mientras i + m <= n:
+        entero j = 0
+        mientras j < m:
+            si texto[i + j] != aguja[j]:
+                romper
+            j = j + 1
+        si j == m:
+            retornar i
+        i = i + 1
+    retornar -1
+
+funcion xml_dec_solo_espacios(s: cadena) -> booleano:
+    entero n = longitud(s)
+    entero i = 0
+    mientras i < n:
+        si no xml_dec_es_espacio(s[i]):
+            retornar falso
+        i = i + 1
+    retornar verdadero
+
+funcion xml_dec_es_nombre_inicio(ch: cadena) -> booleano:
+    si ch >= "a" y ch <= "z":
+        retornar verdadero
+    si ch >= "A" y ch <= "Z":
+        retornar verdadero
+    si ch == "_":
+        retornar verdadero
+    si ch == ":":
+        retornar verdadero
+    retornar falso
+
+funcion xml_dec_es_nombre(ch: cadena) -> booleano:
+    si xml_dec_es_nombre_inicio(ch):
+        retornar verdadero
+    si ch >= "0" y ch <= "9":
+        retornar verdadero
+    si ch == "-":
+        retornar verdadero
+    si ch == ".":
+        retornar verdadero
+    retornar falso
+
+# Construye un XmlResultado de error (nodo vacío de relleno).
+funcion xml_dec_error(mensaje: cadena, pos: entero) -> XmlResultado:
+    diccionario<cadena, cadena> attrs = {}
+    lista<XmlNodo> h = []
+    XmlNodo relleno = XmlNodo("", "", attrs, h)
+    XmlResultado r = XmlResultado(falso, mensaje, pos, relleno)
+    retornar r
+
+funcion xml_dec_ok(valor: XmlNodo, pos: entero) -> XmlResultado:
+    XmlResultado r = XmlResultado(verdadero, "", pos, valor)
+    retornar r
+
+# Lee un nombre de etiqueta/atributo en 'pos' (tras saltar espacios).
+# El nombre viaja en r.valor.texto; r.pos queda tras el nombre.
+funcion xml_dec_leer_nombre(texto: cadena, pos: entero) -> XmlResultado:
+    pos = xml_dec_saltar(texto, pos)
+    entero n = longitud(texto)
+    si pos >= n:
+        retornar xml_dec_error(c"se esperaba un nombre en pos {pos}", pos)
+    si no xml_dec_es_nombre_inicio(texto[pos]):
+        retornar xml_dec_error(c"nombre inválido en pos {pos}", pos)
+    entero ini = pos
+    pos = pos + 1
+    mientras pos < n:
+        si xml_dec_es_nombre(texto[pos]):
+            pos = pos + 1
+        demas:
+            romper
+    cadena nombre = xml_dec_cortar(texto, ini, pos)
+    diccionario<cadena, cadena> attrs = {}
+    lista<XmlNodo> h = []
+    XmlNodo portador = XmlNodo("", nombre, attrs, h)
+    retornar xml_dec_ok(portador, pos)
+
+# Lee 'clave="valor" ...' hasta '>' o '/>'. No consume el cierre.
+# Los atributos viajan en r.valor.atributos; r.pos queda al cierre.
+funcion xml_dec_leer_atributos(texto: cadena, pos: entero) -> XmlResultado:
+    diccionario<cadena, cadena> attrs = {}
+    entero n = longitud(texto)
+    mientras verdadero:
+        pos = xml_dec_saltar(texto, pos)
+        si pos >= n:
+            retornar xml_dec_error("etiqueta sin cerrar", pos)
+        cadena ch = texto[pos]
+        si ch == "/" o ch == ">":
+            romper
+        si ch == "?":
+            romper
+        XmlResultado rn = xml_dec_leer_nombre(texto, pos)
+        si no rn.ok:
+            retornar rn
+        cadena clave = rn.valor.texto
+        pos = rn.pos
+        pos = xml_dec_saltar(texto, pos)
+        si pos >= n o texto[pos] != "=":
+            retornar xml_dec_error(c"se esperaba '=' tras el atributo en pos {pos}", pos)
+        pos = xml_dec_saltar(texto, pos + 1)
+        si pos >= n:
+            retornar xml_dec_error("valor de atributo sin cerrar", pos)
+        cadena comilla = texto[pos]
+        si comilla != "\"" y comilla != "'":
+            retornar xml_dec_error(c"el valor del atributo debe ir entre comillas en pos {pos}", pos)
+        pos = pos + 1
+        entero ini = pos
+        mientras pos < n y texto[pos] != comilla:
+            pos = pos + 1
+        si pos >= n:
+            retornar xml_dec_error("valor de atributo sin cerrar", pos)
+        cadena crudo = xml_dec_cortar(texto, ini, pos)
+        cadena val = esc.xml_desescapar(crudo)
+        si clave en attrs:
+            retornar xml_dec_error(c"atributo duplicado en pos {pos}", pos)
+        attrs[clave] = val
+        pos = pos + 1
+    diccionario<cadena, cadena> copia = attrs
+    lista<XmlNodo> h = []
+    XmlNodo portador = XmlNodo("", "", copia, h)
+    retornar xml_dec_ok(portador, pos)
+
+# Salta prólogo/epílogo: espacios, <?...?>, <!-- --> y <!...>.
+# Devuelve la nueva pos, o -1 si algo quedó sin cerrar.
+funcion xml_dec_saltar_prologo(texto: cadena, pos: entero) -> entero:
+    entero n = longitud(texto)
+    mientras verdadero:
+        pos = xml_dec_saltar(texto, pos)
+        si pos + 1 >= n o texto[pos] != "<":
+            romper
+        cadena sig = texto[pos + 1]
+        si sig == "?":
+            entero fin = xml_dec_buscar(texto, pos + 2, "?>")
+            si fin < 0:
+                retornar -1
+            pos = fin + 2
+        sino si sig == "!":
+            si pos + 3 < n y texto[pos + 2] == "-" y texto[pos + 3] == "-":
+                entero fin2 = xml_dec_buscar(texto, pos + 4, "-->")
+                si fin2 < 0:
+                    retornar -1
+                pos = fin2 + 3
+            demas:
+                entero j = pos + 2
+                mientras j < n y texto[j] != ">":
+                    j = j + 1
+                si j >= n:
+                    retornar -1
+                pos = j + 1
+        demas:
+            romper
+    retornar pos
+
+# Parsea UN elemento en 'pos' (texto[pos] debe ser '<').
+funcion xml_parse_nodo(texto: cadena, pos: entero) -> XmlResultado:
+    pos = xml_dec_saltar(texto, pos)
+    entero n = longitud(texto)
+    si pos >= n:
+        retornar xml_dec_error(c"fin inesperado, se esperaba '<' en pos {pos}", pos)
+    si texto[pos] != "<":
+        retornar xml_dec_error(c"se esperaba '<' en pos {pos}", pos)
+    si pos + 1 < n:
+        si texto[pos + 1] == "/":
+            retornar xml_dec_error(c"etiqueta de cierre inesperada en pos {pos}", pos)
+        si texto[pos + 1] == "?" o texto[pos + 1] == "!":
+            retornar xml_dec_error(c"se esperaba una etiqueta de apertura en pos {pos}", pos)
+    XmlResultado rn = xml_dec_leer_nombre(texto, pos + 1)
+    si no rn.ok:
+        retornar rn
+    cadena etiqueta = rn.valor.texto
+    pos = rn.pos
+    XmlResultado ra = xml_dec_leer_atributos(texto, pos)
+    si no ra.ok:
+        retornar ra
+    diccionario<cadena, cadena> attrs = ra.valor.atributos
+    pos = xml_dec_saltar(texto, ra.pos)
+    si pos >= n:
+        retornar xml_dec_error("etiqueta sin cerrar", pos)
+    si texto[pos] == "?":
+        retornar xml_dec_error(c"se esperaba '>' en pos {pos}", pos)
+    si texto[pos] == "/":
+        si pos + 1 >= n o texto[pos + 1] != ">":
+            retornar xml_dec_error(c"se esperaba '/>' en pos {pos}", pos)
+        lista<XmlNodo> h0 = []
+        XmlNodo nodov = XmlNodo(etiqueta, "", attrs, h0)
+        retornar xml_dec_ok(nodov, pos + 2)
+    si texto[pos] != ">":
+        retornar xml_dec_error(c"se esperaba '>' en pos {pos}", pos)
+    pos = pos + 1
+    cadena crudo = ""
+    lista<XmlNodo> hijos = []
+    mientras verdadero:
+        si pos >= n:
+            retornar xml_dec_error(c"la etiqueta '<{etiqueta}>' quedó sin cerrar", pos)
+        si texto[pos] == "<":
+            si pos + 1 >= n:
+                retornar xml_dec_error("fin inesperado tras '<'", pos)
+            cadena sig = texto[pos + 1]
+            si sig == "/":
+                XmlResultado rc = xml_dec_leer_nombre(texto, pos + 2)
+                si no rc.ok:
+                    retornar rc
+                cadena cierre = rc.valor.texto
+                pos = xml_dec_saltar(texto, rc.pos)
+                si pos >= n o texto[pos] != ">":
+                    retornar xml_dec_error(c"se esperaba '>' para cerrar en pos {pos}", pos)
+                pos = pos + 1
+                si cierre != etiqueta:
+                    retornar xml_dec_error(c"el cierre '</{cierre}>' no coincide con '<{etiqueta}>'", pos)
+                romper
+            sino si sig == "!":
+                si pos + 3 < n y texto[pos + 2] == "-" y texto[pos + 3] == "-":
+                    entero fin = xml_dec_buscar(texto, pos + 4, "-->")
+                    si fin < 0:
+                        retornar xml_dec_error("comentario sin cerrar", pos)
+                    pos = fin + 3
+                sino si pos + 8 < n y xml_dec_cortar(texto, pos + 2, pos + 9) == "[CDATA[":
+                    entero fin2 = xml_dec_buscar(texto, pos + 9, "]]>")
+                    si fin2 < 0:
+                        retornar xml_dec_error("CDATA sin cerrar", pos)
+                    cadena datos = xml_dec_cortar(texto, pos + 9, fin2)
+                    crudo = crudo + datos
+                    pos = fin2 + 3
+                demas:
+                    entero j = pos + 2
+                    mientras j < n y texto[j] != ">":
+                        j = j + 1
+                    si j >= n:
+                        retornar xml_dec_error("declaración '<!...>' sin cerrar", pos)
+                    pos = j + 1
+            sino si sig == "?":
+                entero fin3 = xml_dec_buscar(texto, pos + 2, "?>")
+                si fin3 < 0:
+                    retornar xml_dec_error("instrucción '<?...?>' sin cerrar", pos)
+                pos = fin3 + 2
+            demas:
+                XmlResultado rh = xml_parse_nodo(texto, pos)
+                si no rh.ok:
+                    retornar rh
+                hijos = agregar(hijos, rh.valor)
+                pos = rh.pos
+        demas:
+            entero ini = pos
+            mientras pos < n y texto[pos] != "<":
+                pos = pos + 1
+            crudo = crudo + xml_dec_cortar(texto, ini, pos)
+    cadena t = esc.xml_desescapar(crudo)
+    si longitud(hijos) > 0 y xml_dec_solo_espacios(t):
+        t = ""
+    XmlNodo nodo = XmlNodo(etiqueta, t, attrs, hijos)
+    retornar xml_dec_ok(nodo, pos)
+
+# --- entrada principal --------------------------------------------------
+
+funcion xml_parse(texto: cadena) -> XmlResultado:
+    entero pos = xml_dec_saltar(texto, 0)
+    pos = xml_dec_saltar_prologo(texto, pos)
+    si pos < 0:
+        retornar xml_dec_error("prólogo sin cerrar (comentario o <?...?> sin terminar)", 0)
+    pos = xml_dec_saltar(texto, pos)
+    si pos >= longitud(texto):
+        retornar xml_dec_error("documento vacío", pos)
+    XmlResultado r = xml_parse_nodo(texto, pos)
+    si no r.ok:
+        retornar r
+    entero fin = xml_dec_saltar(texto, r.pos)
+    fin = xml_dec_saltar_prologo(texto, fin)
+    si fin < 0:
+        retornar xml_dec_error("epílogo sin cerrar (comentario o <?...?> sin terminar)", r.pos)
+    fin = xml_dec_saltar(texto, fin)
+    si fin != longitud(texto):
+        retornar xml_dec_error(c"texto extra después del elemento raíz en pos {fin}", fin)
+    retornar r

@@ -1,0 +1,129 @@
+# =====================================================================
+# ruta.cwn — rutas de archivo estilo POSIX en Wini puro
+# ---------------------------------------------------------------------
+#   rut_unir("docs", "a.txt")        -> "docs/a.txt"
+#   rut_directorio("docs/a.txt")     -> "docs"
+#   rut_nombre("docs/a.txt")         -> "a.txt"
+#   rut_extension("docs/a.tar.gz")   -> "gz"
+#   rut_cambiar_extension("a.txt", "md") -> "a.md"
+#   rut_normalizar("a//b/../c/./d")  -> "a/c/d"
+#
+# Trabaja con '/' como separador (Linux/POSIX). No resuelve enlaces ni
+# accede al disco: es manipulación de cadenas nomás.
+# Sin imports. Solo builtins.
+# =====================================================================
+
+# Corta s[ini..fin) con índices exclusivos.
+funcion rut_cortar(s: cadena, ini: entero, fin: entero) -> cadena:
+    cadena r = ""
+    entero i = ini
+    mientras i < fin:
+        r = r + s[i]
+        i = i + 1
+    retornar r
+
+# Índice de la última '/' en p, o -1.
+funcion rut_ultima_barra(p: cadena) -> entero:
+    entero i = longitud(p) - 1
+    mientras i >= 0:
+        si p[i] == "/":
+            retornar i
+        i = i - 1
+    retornar -1
+
+funcion rut_es_absoluta(p: cadena) -> booleano:
+    retornar longitud(p) > 0 y p[0] == "/"
+
+# Une dos trozos de ruta con un solo '/' intermedio.
+funcion rut_unir(a: cadena, b: cadena) -> cadena:
+    si vacia(a):
+        retornar b
+    si vacia(b):
+        retornar a
+    si rut_ultima_barra(a) == longitud(a) - 1:
+        retornar a + b
+    retornar a + "/" + b
+
+# Carpeta que contiene la ruta ("docs/a.txt" -> "docs"; "a.txt" -> "").
+funcion rut_directorio(p: cadena) -> cadena:
+    entero i = rut_ultima_barra(p)
+    si i < 0:
+        retornar ""
+    si i == 0:
+        retornar "/"
+    retornar rut_cortar(p, 0, i)
+
+# Último componente ("docs/a.txt" -> "a.txt"; "docs/" -> "docs").
+funcion rut_nombre(p: cadena) -> cadena:
+    entero i = rut_ultima_barra(p)
+    retornar rut_cortar(p, i + 1, longitud(p))
+
+# Extensión sin el punto ("a.tar.gz" -> "gz"; "a." -> ""; sin ext -> "").
+funcion rut_extension(p: cadena) -> cadena:
+    cadena n = rut_nombre(p)
+    entero i = longitud(n) - 1
+    mientras i >= 0:
+        si n[i] == ".":
+            retornar rut_cortar(n, i + 1, longitud(n))
+        i = i - 1
+    retornar ""
+
+# Nombre sin su extensión ("a.tar.gz" -> "a.tar").
+funcion rut_nombre_sin_extension(p: cadena) -> cadena:
+    cadena n = rut_nombre(p)
+    entero i = longitud(n) - 1
+    mientras i >= 0:
+        si n[i] == ".":
+            retornar rut_cortar(n, 0, i)
+        i = i - 1
+    retornar n
+
+# Cambia (o agrega) la extensión. ext con o sin punto.
+funcion rut_cambiar_extension(p: cadena, ext: cadena) -> cadena:
+    cadena base = rut_directorio(p)
+    cadena n = rut_nombre_sin_extension(p)
+    cadena e = ext
+    si longitud(e) > 0 y e[0] == ".":
+        e = rut_cortar(e, 1, longitud(e))
+    si longitud(e) == 0:
+        si vacia(base):
+            retornar n
+        retornar base + "/" + n
+    si vacia(base):
+        retornar n + "." + e
+    retornar base + "/" + n + "." + e
+
+# Colapsa '//', quita '.' y resuelve '..' (sin salirse de la raíz en
+# rutas absolutas). "a/../../b" -> "b"; "/a/../b" -> "/b".
+funcion rut_normalizar(p: cadena) -> cadena:
+    booleano absoluta = rut_es_absoluta(p)
+    lista<cadena> partes = []
+    entero n = longitud(p)
+    entero i = 0
+    entero ini = 0
+    mientras i <= n:
+        si i == n o p[i] == "/":
+            si i > ini:
+                cadena parte2 = rut_cortar(p, ini, i)
+                si parte2 == ".":
+                    # se ignora
+                sino si parte2 == "..":
+                    si no vacia(partes) y ultimo(partes) != "..":
+                        partes = quitar(partes, longitud(partes) - 1)
+                    sino si no absoluta:
+                        partes = agregar(partes, "..")
+                demas:
+                    partes = agregar(partes, parte2)
+            ini = i + 1
+        i = i + 1
+    cadena r = ""
+    para parte3 en partes:
+        si vacia(r):
+            r = parte3
+        demas:
+            r = r + "/" + parte3
+    si absoluta:
+        retornar "/" + r
+    si vacia(r):
+        retornar "."
+    retornar r

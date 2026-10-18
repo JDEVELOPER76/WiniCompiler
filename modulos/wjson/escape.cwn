@@ -1,0 +1,118 @@
+# =====================================================================
+# escape.cwn — escape / unescape de cadenas JSON (Wini puro, sin imports)
+# ---------------------------------------------------------------------
+# Limitación conocida de los literales Wini (lexer.go:interpretarEscapes):
+# solo \n \t \r \\ \" \' se interpretan como un byte; \b \f \/ \u quedan
+# como 2-6 caracteres literales. Por eso:
+#  - json_escapar cubre " \ \n \r \t (lo representable). Otros controles
+#    <0x20 se dejan tal cual y se documentan (raros en la práctica; si
+#    los necesitas, pre-procesa la cadena).
+#  - json_desescapar decodifica \" \\ \/ \n \r \t y \uXXXX ASCII
+#    imprimible (32-126) vía tabla; \b \f y \u fuera de rango dan "?".
+# =====================================================================
+
+funcion json_escapar(s: cadena) -> cadena:
+    cadena r = ""
+    para ch en s:
+        si ch == "\"":
+            r = r + "\\" + "\""
+        sino si ch == "\\":
+            r = r + "\\" + "\\"
+        sino si ch == "\n":
+            r = r + "\\" + "n"
+        sino si ch == "\r":
+            r = r + "\\" + "r"
+        sino si ch == "\t":
+            r = r + "\\" + "t"
+        demas:
+            r = r + ch
+    retornar r
+
+funcion json_entrecomillar(s: cadena) -> cadena:
+    retornar "\"" + json_escapar(s) + "\""
+
+# Dígito hexadecimal -> valor 0-15, o -1 si no es hex.
+funcion json_hex_valor(ch: cadena) -> entero:
+    si ch >= "0" y ch <= "9":
+        retornar entero(ch)
+    si ch == "a" o ch == "A":
+        retornar 10
+    si ch == "b" o ch == "B":
+        retornar 11
+    si ch == "c" o ch == "C":
+        retornar 12
+    si ch == "d" o ch == "D":
+        retornar 13
+    si ch == "e" o ch == "E":
+        retornar 14
+    si ch == "f" o ch == "F":
+        retornar 15
+    retornar -1
+
+# Tabla de imprimibles ASCII 32-126 para decodificar \u00XX.
+funcion json_chr_imprimible(code: entero) -> cadena:
+    cadena t = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+    si code < 32 o code > 126:
+        retornar "?"
+    retornar t[code - 32]
+
+# Desescapa el CONTENIDO de una cadena JSON (sin las comillas externas).
+funcion json_desescapar(s: cadena) -> cadena:
+    cadena r = ""
+    entero n = longitud(s)
+    entero i = 0
+    mientras i < n:
+        cadena ch = s[i]
+        si ch != "\\":
+            r = r + ch
+            i = i + 1
+        demas:
+            si i + 1 >= n:
+                r = r + "\\"
+                i = i + 1
+            demas:
+                cadena e = s[i + 1]
+                si e == "\"":
+                    r = r + "\""
+                    i = i + 2
+                sino si e == "\\":
+                    r = r + "\\"
+                    i = i + 2
+                sino si e == "/":
+                    r = r + "/"
+                    i = i + 2
+                sino si e == "n":
+                    r = r + "\n"
+                    i = i + 2
+                sino si e == "r":
+                    r = r + "\r"
+                    i = i + 2
+                sino si e == "t":
+                    r = r + "\t"
+                    i = i + 2
+                sino si e == "b":
+                    r = r + "?"
+                    i = i + 2
+                sino si e == "f":
+                    r = r + "?"
+                    i = i + 2
+                sino si e == "u":
+                    si i + 5 >= n:
+                        r = r + "\\" + "u"
+                        i = i + 2
+                    demas:
+                        entero v0 = json_hex_valor(s[i + 2])
+                        entero v1 = json_hex_valor(s[i + 3])
+                        entero v2 = json_hex_valor(s[i + 4])
+                        entero v3 = json_hex_valor(s[i + 5])
+                        si v0 < 0 o v1 < 0 o v2 < 0 o v3 < 0:
+                            r = r + "\\" + "u"
+                            i = i + 2
+                        demas:
+                            entero code = v0 * 4096 + v1 * 256 + v2 * 16 + v3
+                            r = r + json_chr_imprimible(code)
+                            i = i + 6
+                demas:
+                    r = r + "\\" + e
+                    i = i + 2
+    retornar r

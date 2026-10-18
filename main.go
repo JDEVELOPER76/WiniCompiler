@@ -98,6 +98,12 @@ func main() {
 	base := strings.TrimSuffix(filepath.Base(input), filepath.Ext(input))
 	dirFuente := filepath.Dir(input)
 
+	// Advertencias no fatales (código inalcanzable, etc). No impiden
+	// compilar, pero se informan para que no queden en silencio.
+	for _, a := range wini.UltimasAvisas() {
+		fmt.Fprintf(os.Stderr, "aviso: %s\n", a.String())
+	}
+
 	// ---- Carpeta de salida ----
 	// Si el usuario no da -o, todo se dirige a 'build/' (creada si hace
 	// falta) junto al archivo fuente, en vez de ensuciar esa carpeta.
@@ -245,6 +251,10 @@ func main() {
 		args = append(args, lib)
 	}
 
+	// libm (math.h) en Unix/MinGW: inofensivo si no se usa, necesario
+	// para módulos que usen <math.h> (p.ej. matematicas).
+	args = append(args, "-lm")
+
 	// Bibliotecas dinámicas (.so) pasadas a mano con -so: se copian a
 	// 'core/' (junto al resultado) y se enlazan con -L/-l: (en vez de la
 	// ruta completa) para que en el binario quede grabado solo el
@@ -334,7 +344,8 @@ func elegirBinario(user, rol string) string {
 
 // obtenerRuntimeObj devuelve la ruta a runtime.o:
 //   - respeta -runtime-obj si se pasó (y existe);
-//   - busca en sitios habituales;
+//   - busca en sitios habituales (junto al fuente, junto a winic, shares
+//     estándar y $WINI_PATH);
 //   - si no lo encuentra, compila runtime/runtime.c a un temporal con -fPIC.
 func obtenerRuntimeObj(dirFuente, rtObjUser, ccUser string) (string, error) {
 	if rtObjUser != "" {
@@ -352,6 +363,7 @@ func obtenerRuntimeObj(dirFuente, rtObjUser, ccUser string) (string, error) {
 		filepath.Join(dirFuente, "..", "runtime.o"),
 		"runtime.o",
 	}
+	candidatos = append(candidatos, candidatosRuntimeExtra("runtime.o")...)
 	for _, c := range candidatos {
 		if _, err := os.Stat(c); err == nil {
 			abs, _ := filepath.Abs(c)
@@ -378,7 +390,9 @@ func obtenerRuntimeObj(dirFuente, rtObjUser, ccUser string) (string, error) {
 	return tmp.Name(), nil
 }
 
-// buscarRuntimeC busca runtime/runtime.c en los sitios habituales.
+// buscarRuntimeC busca runtime/runtime.c en los sitios habituales,
+// incluyendo la instalación estándar (bin/ + share/wini) y $WINI_PATH,
+// para que winic funcione desde el PATH sin copiar runtime/ junto al .wn.
 func buscarRuntimeC(dirFuente string) string {
 	candidatos := []string{
 		filepath.Join(dirFuente, "runtime", "runtime.c"),
@@ -386,6 +400,7 @@ func buscarRuntimeC(dirFuente string) string {
 		filepath.Join(dirFuente, "..", "runtime", "runtime.c"),
 		"runtime/runtime.c",
 	}
+	candidatos = append(candidatos, candidatosRuntimeExtra(filepath.Join("runtime", "runtime.c"))...)
 	for _, c := range candidatos {
 		if _, err := os.Stat(c); err == nil {
 			abs, _ := filepath.Abs(c)
@@ -393,6 +408,50 @@ func buscarRuntimeC(dirFuente string) string {
 		}
 	}
 	return ""
+}
+
+// candidatosRuntimeExtra genera rutas adicionales para 'rel' (p.ej.
+// "runtime.o" o "runtime/runtime.c") en:
+//   - junto al ejecutable real (resolviendo symlinks de ~/.local/bin),
+//     incluyendo ../share/wini (layout 'make install');
+//   - $WINI_PATH (cada entrada y su subcarpeta share/wini);
+//   - ubicaciones estándar: ~/.local/share/wini, /usr/local/share/wini,
+//     /usr/share/wini, ~/.wini.
+func candidatosRuntimeExtra(rel string) []string {
+	var out []string
+	agregar := func(base string) {
+		if base == "" {
+			return
+		}
+		out = append(out, filepath.Join(base, rel))
+	}
+	if exe, err := os.Executable(); err == nil {
+		dirExe := filepath.Dir(exe)
+		if res, err := filepath.EvalSymlinks(dirExe); err == nil {
+			dirExe = res
+		}
+		agregar(dirExe)
+		agregar(filepath.Join(dirExe, "..", "share", "wini"))
+		// Dev: binario dentro del repo (wini_compilador/winic).
+		agregar(filepath.Join(dirExe, ".."))
+	}
+	if wp := strings.TrimSpace(os.Getenv("WINI_PATH")); wp != "" {
+		for _, d := range filepath.SplitList(wp) {
+			d = strings.TrimSpace(d)
+			if d == "" {
+				continue
+			}
+			agregar(d)
+			agregar(filepath.Join(d, "..", "share", "wini"))
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		agregar(filepath.Join(home, ".local", "share", "wini"))
+		agregar(filepath.Join(home, ".wini"))
+	}
+	agregar(filepath.Join(string(filepath.Separator), "usr", "local", "share", "wini"))
+	agregar(filepath.Join(string(filepath.Separator), "usr", "share", "wini"))
+	return out
 }
 
 // copiarAgregados copia cada ruta de 'rutas' (archivo o carpeta) dentro

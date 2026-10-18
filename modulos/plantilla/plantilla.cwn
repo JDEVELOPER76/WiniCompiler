@@ -1,0 +1,106 @@
+# =====================================================================
+# plantilla.cwn — renderizado de plantillas con {{marca}} (Wini puro)
+# ---------------------------------------------------------------------
+#   diccionario<cadena, cadena> d = {}
+#   d["nombre"] = "Wini"
+#   cadena s = plt_renderizar("Hola {{nombre}}!", d)   # "Hola Wini!"
+#
+# Marcas: {{clave}} se sustituye por datos["clave"]. Clave ausente ->
+# cadena vacía (o el texto que pases a plt_renderizar_con_defecto).
+# Para escribir un par de llaves literal, usá {{llave}} (sale "{}"):
+#   plt_renderizar("x{{llave}}y", {}) -> "x{}y"
+# Las claves admiten cualquier carácter alfanumérico, '_' y '-'.
+# Sin imports. Solo builtins.
+# =====================================================================
+
+# Verdadero si c puede formar parte de una clave de marca.
+funcion plt_es_clave(ch: cadena) -> booleano:
+    si (ch >= "a" y ch <= "z") o (ch >= "A" y ch <= "Z"):
+        retornar verdadero
+    si ch >= "0" y ch <= "9":
+        retornar verdadero
+    si ch == "_" o ch == "-":
+        retornar verdadero
+    retornar falso
+
+# Corta s[ini..fin) con índices exclusivos.
+funcion plt_cortar(s: cadena, ini: entero, fin: entero) -> cadena:
+    cadena r = ""
+    entero i = ini
+    mientras i < fin:
+        r = r + s[i]
+        i = i + 1
+    retornar r
+
+# Renderiza con cadena vacía para las claves ausentes.
+funcion plt_renderizar(plantilla: cadena, datos: diccionario<cadena, cadena>) -> cadena:
+    retornar plt_renderizar_con_defecto(plantilla, datos, "")
+
+funcion plt_renderizar_con_defecto(plantilla: cadena, datos: diccionario<cadena, cadena>, defecto: cadena) -> cadena:
+    cadena r = ""
+    entero n = longitud(plantilla)
+    entero i = 0
+    mientras i < n:
+        # ¿empieza una marca acá?
+        si plantilla[i] == "{" y i + 1 < n y plantilla[i + 1] == "{":
+            si i + 2 < n y plantilla[i + 2] == "}":
+                # marca vacía literal: {{}} -> {}
+                r = r + "{}"
+                i = i + 3
+                continuar
+            si i + 9 <= n y plt_cortar(plantilla, i + 2, i + 9) == "llave}}":
+                # escape de llaves: {{llave}} -> {}
+                r = r + "{}"
+                i = i + 9
+                continuar
+            entero j = i + 2
+            mientras j < n y plt_es_clave(plantilla[j]):
+                j = j + 1
+            si j > i + 2 y j + 1 < n y plantilla[j] == "}" y plantilla[j + 1] == "}":
+                cadena clave = plt_cortar(plantilla, i + 2, j)
+                si diccionario_tiene(datos, clave):
+                    r = r + datos[clave]
+                demas:
+                    r = r + defecto
+                i = j + 2
+                continuar
+            # '{' suelto o marca mal formada: se copia tal cual.
+        r = r + plantilla[i]
+        i = i + 1
+    retornar r
+
+# Verdadero si el texto contiene al menos una marca {{...}}.
+funcion plt_tiene_marcas(plantilla: cadena) -> booleano:
+    entero n = longitud(plantilla)
+    entero i = 0
+    mientras i < n - 1:
+        si plantilla[i] == "{" y plantilla[i + 1] == "{":
+            retornar verdadero
+        i = i + 1
+    retornar falso
+
+# Lista de claves referenciadas en la plantilla (en orden, sin repetir
+# las consecutivas iguales no se garantiza: puede haber repetidas).
+funcion plt_claves(plantilla: cadena) -> lista<cadena>:
+    lista<cadena> r = []
+    entero n = longitud(plantilla)
+    entero i = 0
+    mientras i < n - 1:
+        si plantilla[i] == "{" y plantilla[i + 1] == "{":
+            entero j = i + 2
+            mientras j < n y plt_es_clave(plantilla[j]):
+                j = j + 1
+            si j > i + 2 y j + 1 < n y plantilla[j] == "}" y plantilla[j + 1] == "}":
+                r = agregar(r, plt_cortar(plantilla, i + 2, j))
+                i = j + 2
+                continuar
+        i = i + 1
+    retornar r
+
+# Verdadero si el diccionario tiene la clave (el builtin de índice lanza
+# IndexError si falta, así que se consulta aparte).
+funcion diccionario_tiene(d: diccionario<cadena, cadena>, clave: cadena) -> booleano:
+    para k en claves(d):
+        si k == clave:
+            retornar verdadero
+    retornar falso

@@ -1,0 +1,73 @@
+# =====================================================================
+# api.cwn — uso FÁCIL de wjson con UN solo importar (Wini puro)
+# ---------------------------------------------------------------------
+# Capas reales (no amalgamado): importa tipos, encode, decode y archivo;
+# el compilador resuelve lo transitivo solo.
+#
+#   importar "wjson/api" como json
+#
+#   JsonResultado r = json.json_abrir("datos.json")   # archivo
+#   JsonResultado t = json.json_cargar("{\"a\": 1}")   # texto
+#   cadena b = json.json_bonito(r.valor, 4)           # indentado
+#   json.json_guardar("salida.json", r.valor)         # compacto
+#   json.json_guardar_bonito("linda.json", r.valor, 2)
+#
+# Los tipos JsonValor/JsonResultado los aporta tipos.cwn (vía imports):
+# NO hay que definirlos en tu archivo. Sin 'principal'.
+# =====================================================================
+
+importar "tipos" como tipos
+importar "encode" como enc
+importar "decode" como dec
+importar "archivo" como archivo
+
+# Parsea un texto JSON que ya tienes en memoria.
+funcion json_cargar(texto: cadena) -> JsonResultado:
+    retornar dec.json_parse(texto)
+
+# Abre un archivo y lo parsea. Si no existe o el JSON es inválido,
+# ok es falso y error explica el motivo.
+funcion json_abrir(ruta: cadena) -> JsonResultado:
+    si no archivo.json_existe(ruta):
+        lista<JsonValor> h = []
+        diccionario<cadena, JsonValor> p = {}
+        JsonValor vnulo = JsonValor("nulo", "", 0.0, falso, h, p)
+        JsonResultado r = JsonResultado(falso, c"no existe el archivo: {ruta}", 0, vnulo)
+        retornar r
+    cadena texto = archivo.json_cargar_texto(ruta)
+    retornar dec.json_parse(texto)
+
+# Guarda el valor en compacto. Verdadero si se escribió completo.
+funcion json_guardar(ruta: cadena, valor: JsonValor) -> booleano:
+    retornar archivo.json_guardar_texto(ruta, enc.json_codificar(valor))
+
+# Guarda el valor con indentación (espacios por nivel, 0 = compacto).
+funcion json_guardar_bonito(ruta: cadena, valor: JsonValor, espacios: entero) -> booleano:
+    retornar archivo.json_guardar_texto(ruta, enc.json_codificar_con(valor, espacios))
+
+# Devuelve el valor como texto con indentación (para mostrar en terminal).
+funcion json_bonito(valor: JsonValor, espacios: entero) -> cadena:
+    retornar enc.json_codificar_con(valor, espacios)
+
+
+    
+
+# --- Alias cortos para armar objetos rápido ---------------------------
+
+funcion json_put(v: JsonValor, clave: cadena, item: JsonValor) -> JsonValor:
+    retornar tipos.json_objeto_poner(v, clave, item)
+
+funcion json_put_cadena(v: JsonValor, clave: cadena, texto: cadena) -> JsonValor:
+    retornar tipos.json_objeto_poner(v, clave, tipos.json_cadena(texto))
+
+funcion json_put_numero(v: JsonValor, clave: cadena, valor: decimal) -> JsonValor:
+    retornar tipos.json_objeto_poner(v, clave, tipos.json_numero(valor))
+
+funcion json_put_numero_entero(v: JsonValor, clave: cadena, valor: entero) -> JsonValor:
+    retornar tipos.json_objeto_poner(v, clave, tipos.json_numero_entero(valor))
+
+funcion json_put_bool(v: JsonValor, clave: cadena, valor: booleano) -> JsonValor:
+    retornar tipos.json_objeto_poner(v, clave, tipos.json_bool(valor))
+
+funcion json_put_nulo(v: JsonValor, clave: cadena) -> JsonValor:
+    retornar tipos.json_objeto_poner(v, clave, tipos.json_nulo())

@@ -12,16 +12,14 @@ import (
 // Resolución de 'importar': soporte de módulos .wn
 // ---------------------------------------------------------------------
 //
-// Un módulo .wn es un archivo Wini que solo declara funciones en su nivel
-// superior (una "biblioteca"): no tiene sentido ejecutable propio ni
-// requiere 'principal'. 'importar nombre' (o 'importar "ruta"') localiza
-// ese archivo, lo parsea, resuelve recursivamente sus propias
-// importaciones, y trae sus funciones al espacio de nombres global del
-// programa que importa (no hay todavía llamadas calificadas del estilo
-// 'modulo.funcion()': todo queda en un único espacio de nombres plano, tal
-// como ya lo maneja el resto de la base mínima). El alias de
-// 'importar x como y' se acepta sintácticamente pero, por ahora, no
-// cambia la resolución de nombres.
+// Un módulo .wn es un archivo Wini que solo declara estructuras y
+// funciones en su nivel superior (una "biblioteca"): no tiene sentido
+// ejecutable propio ni requiere 'principal'. 'importar nombre' (o
+// 'importar "ruta"') localiza ese archivo, lo parsea, resuelve
+// recursivamente sus propias importaciones, y trae sus declaraciones al
+// espacio de nombres global del programa que importa. Las llamadas
+// calificadas 'modulo.funcion()' se normalizan a esa misma función
+// global después de expandir los módulos.
 
 // resolverImportaciones expande, en el AST ya parseado de 'raiz', los
 // nodos IMPORTAR de nivel superior. rutaEntrada es la ruta (si se conoce)
@@ -45,6 +43,7 @@ func resolverImportaciones(raiz *Nodo, dirBase string, rutaEntrada string) ([]st
 		enProgreso: map[string]bool{},
 		funciones:  map[string]bool{},
 		libs:       map[string]bool{},
+		aliasModulos: map[string]bool{},
 	}
 	if rutaEntrada != "" {
 		if abs, err := filepath.Abs(rutaEntrada); err == nil {
@@ -69,6 +68,7 @@ func resolverImportaciones(raiz *Nodo, dirBase string, rutaEntrada string) ([]st
 		return nil, err
 	}
 	raiz.Hijos = nuevosHijos
+	normalizarLlamadasDeModulo(raiz, cargador.aliasModulos)
 	return cargador.listaLibs(), nil
 }
 
@@ -77,6 +77,7 @@ type cargadorModulos struct {
 	enProgreso map[string]bool // rutas absolutas en proceso de carga (detecta importaciones circulares)
 	funciones  map[string]bool // nombres de función ya vistos en todo el programa
 	libs       map[string]bool // rutas absolutas .a/.o detectadas automáticamente
+	aliasModulos map[string]bool // alias y nombres cortos usados para llamadas calificadas
 }
 
 // detectarLibsEnDir busca, dentro de 'dir', archivos '.a' u '.o' para
@@ -147,6 +148,16 @@ func (c *cargadorModulos) expandir(sentencias []*Nodo, dirActual string) ([]*Nod
 		}
 
 		nombreModulo, _ := s.Valor.(string)
+		if len(s.Hijos) > 0 {
+			if alias, ok := s.Hijos[0].Valor.(string); ok && alias != "" {
+				c.aliasModulos[alias] = true
+			}
+		}
+		if partes := strings.FieldsFunc(nombreModulo, func(r rune) bool { return r == '/' || r == '\\' || r == '.' }); len(partes) > 0 {
+			nombre := partes[len(partes)-1]
+			nombre = strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(nombre, ".wn"), ".wini"), ".cwn")
+			c.aliasModulos[nombre] = true
+		}
 		ruta, err := resolverRutaModulo(nombreModulo, dirActual)
 		if err != nil {
 			return nil, fmt.Errorf("línea %d: %v", s.Linea, err)
@@ -175,12 +186,12 @@ func (c *cargadorModulos) expandir(sentencias []*Nodo, dirActual string) ([]*Nod
 			return nil, fmt.Errorf("línea %d: %v", s.Linea, err)
 		}
 
-		// Un módulo .wn solo puede declarar funciones (y sus propias
+		// Un módulo .wn declara tipos y funciones (y sus propias
 		// importaciones) en el nivel superior: es una biblioteca, no un
 		// programa con lógica de nivel superior.
 		for _, hijoMod := range modRaiz.Hijos {
-			if hijoMod.Tipo != "FUNCION" && hijoMod.Tipo != "IMPORTAR" && hijoMod.Tipo != "EXTERNA" {
-				return nil, fmt.Errorf("el módulo '%s' (%s) solo puede declarar funciones (o 'externa') en su nivel superior; se encontró '%s' en la línea %d", nombreModulo, ruta, hijoMod.Tipo, hijoMod.Linea)
+			if hijoMod.Tipo != "FUNCION" && hijoMod.Tipo != "IMPORTAR" && hijoMod.Tipo != "EXTERNA" && hijoMod.Tipo != "ESTRUCTURA" {
+				return nil, fmt.Errorf("el módulo '%s' (%s) solo puede declarar estructuras y funciones (o 'externa') en su nivel superior; se encontró '%s' en la línea %d", nombreModulo, ruta, hijoMod.Tipo, hijoMod.Linea)
 			}
 		}
 
@@ -197,8 +208,16 @@ func (c *cargadorModulos) expandir(sentencias []*Nodo, dirActual string) ([]*Nod
 		}
 		c.cargados[rutaAbs] = true
 
-		for _, f := range expandidoMod {
-			nombreFn, _ := f.Valor.(string)
+		// Colisiones: solo se revisan las funciones definidas DIRECTAMENTE
+		// en este módulo. Las transitivas (de sus propios imports) ya se
+		// registraron al expandir esos archivos; revisar la lista ya
+		// expandida las contaría dos veces y daría falsos positivos.
+		// Los duplicados de estructuras los detecta el verificador.
+		for _, hijoMod := range modRaiz.Hijos {
+			if hijoMod.Tipo != "FUNCION" && hijoMod.Tipo != "EXTERNA" {
+				continue
+			}
+			nombreFn, _ := hijoMod.Valor.(string)
 			if c.funciones[nombreFn] {
 				return nil, fmt.Errorf("línea %d: la función '%s' importada de '%s' colisiona con una función ya declarada", s.Linea, nombreFn, ruta)
 			}
@@ -208,6 +227,29 @@ func (c *cargadorModulos) expandir(sentencias []*Nodo, dirActual string) ([]*Nod
 		resultado = append(resultado, expandidoMod...)
 	}
 	return resultado, nil
+}
+
+// normalizarLlamadasDeModulo convierte `alias.funcion(args)` en una llamada
+// normal a `funcion(args)`. Los módulos se expanden en un espacio de nombres
+// plano, por lo que el alias solo sirve para seleccionar el módulo y no se
+// pasa como argumento a la función.
+func normalizarLlamadasDeModulo(n *Nodo, aliases map[string]bool) {
+	if n == nil {
+		return
+	}
+	for i := range n.Hijos {
+		normalizarLlamadasDeModulo(n.Hijos[i], aliases)
+	}
+	if n.Tipo != "LLAMADA_METODO" || len(n.Hijos) == 0 {
+		return
+	}
+	base := n.Hijos[0]
+	nombreBase, ok := base.Valor.(string)
+	if base.Tipo != "IDENTIFICADOR" || !ok || !aliases[nombreBase] {
+		return
+	}
+	n.Tipo = "LLAMADA"
+	n.Hijos = n.Hijos[1:]
 }
 
 // parsearModulo lexea y parsea el código fuente de un módulo importado,
@@ -232,13 +274,31 @@ func parsearModulo(source string, nombreModulo string, ruta string) (raiz *Nodo,
 }
 
 // resolverRutaModulo traduce el nombre de un módulo importado en una ruta
-// de archivo .wn, relativa a 'dirActual' (el directorio de quien importa):
+// de archivo .wn, buscando en este orden:
 //
-//   - 'importar utilidades'          -> utilidades.wn
-//   - 'importar utilidades.texto'    -> utilidades/texto.wn (cada punto es
-//     un separador de subcarpeta, igual que en Python)
-//   - 'importar "otra/ruta.wn"'      -> ruta explícita, tal cual
-//   - 'importar "otra/ruta"'         -> ruta explícita, se le agrega .wn
+//  1. Relativo a 'dirActual' (el directorio de quien importa): conserva
+//     el comportamiento histórico. Vale para 'importar utilidades',
+//     'importar utilidades.texto', 'importar "otra/ruta"' y rutas con
+//     '../' o './'.
+//  2. Búsqueda global (solo si no se encontró en 1 y la ruta no es
+//     explícitamente relativa con '.' ni absoluta): cada raíz de
+//     raicesBusquedaModulos() se prueba como base. Esto permite compilar
+//     desde cualquier carpeta con winic instalado en el PATH, sin tener
+//     que copiar 'modulos/' junto al .wn:
+//
+//       importar "tiempo/tiempo"  -> <raiz>/tiempo/tiempo.cwn
+//       importar "system/sistem"  -> <raíz>/system/sistem.cwn
+//       importar tiempo           -> <raíz>/tiempo.cwn o <raíz>/tiempo/tiempo.cwn
+//
+//     Por compatibilidad, si el import empieza con 'modulos/' o
+//     'modules/' (p.ej. el histórico 'importar "modulos/tiempo/tiempo"'),
+//     también se prueba sin ese prefijo, porque las raíces ya apuntan
+//     dentro de 'modulos/'. Y si el nombre es corto ('tiempo'), se prueba
+//     además '<raíz>/<nombre>/<nombre>.*' (p.ej. 'tiempo' -> 'tiempo/tiempo.cwn').
+//
+// Raíces globales: $WINI_PATH (separado por ':' en Linux/macOS, ';' en
+// Windows), junto al ejecutable winic, y ubicaciones estándar
+// (~/.local/share/wini, /usr/local/share/wini, /usr/share/wini, ~/.wini).
 func resolverRutaModulo(nombreModulo string, dirActual string) (string, error) {
 	if strings.TrimSpace(nombreModulo) == "" {
 		return "", fmt.Errorf("nombre de módulo vacío en 'importar'")
@@ -255,61 +315,235 @@ func resolverRutaModulo(nombreModulo string, dirActual string) (string, error) {
 		relativo = strings.ReplaceAll(nombreModulo, ".", string(filepath.Separator))
 	}
 
-	// Si el usuario ya especificó una extensión válida,
-	// se conserva tal cual.
+	// 1) Intento local: relativo a dirActual (comportamiento histórico).
+	if ruta, ok := probarRutaModuloEn(dirActual, relativo); ok {
+		return ruta, nil
+	}
+	// Con extensión explícita también se prueba solo en local primero.
 	ext := strings.ToLower(filepath.Ext(relativo))
-
-	if ext != ".cwn" && ext != ".wini" {
-		// Si no tiene extensión, probar primero .cwn
-		// y luego .wini.
-		rutaCWN := filepath.Join(dirActual, relativo+".cwn")
-		if info, err := os.Stat(rutaCWN); err == nil {
-			if info.IsDir() {
-				return "", fmt.Errorf("'%s' (%s) es un directorio, no un módulo", nombreModulo, rutaCWN)
-			}
-			return rutaCWN, nil
+	if ext == ".cwn" || ext == ".wini" || ext == ".wn" {
+		if !esBusquedaGlobalAplicable(relativo) {
+			return "", fmt.Errorf(
+				"no se encontró el módulo '%s' (se buscó en '%s'; definí WINI_PATH o instalá winic con 'make install' para búsqueda global)",
+				nombreModulo,
+				filepath.Join(dirActual, relativo),
+			)
 		}
-
-		rutaWINI := filepath.Join(dirActual, relativo+".wini")
-		if info, err := os.Stat(rutaWINI); err == nil {
-			if info.IsDir() {
-				return "", fmt.Errorf("'%s' (%s) es un directorio, no un módulo", nombreModulo, rutaWINI)
-			}
-			return rutaWINI, nil
+		// Si es aplicable a global (p.ej. "modulos/tiempo/tiempo.cwn"),
+		// se sigue abajo a la búsqueda global.
+	} else {
+		if !esBusquedaGlobalAplicable(relativo) {
+			return "", fmt.Errorf(
+				"no se encontró el módulo '%s' (se buscaron '%s.cwn', '%s.wini' y '%s.wn' junto al archivo)",
+				nombreModulo,
+				filepath.Join(dirActual, relativo),
+				filepath.Join(dirActual, relativo),
+				filepath.Join(dirActual, relativo),
+			)
 		}
-
-		return "", fmt.Errorf(
-			"no se encontró el módulo '%s' (se buscó '%s.cwn' y '%s.wini')",
-			nombreModulo,
-			filepath.Join(dirActual, relativo),
-			filepath.Join(dirActual, relativo),
-		)
 	}
 
-	// Si termina en .cwn o .wini, usar la ruta directamente.
-	ruta := filepath.Join(dirActual, relativo)
-
-	info, err := os.Stat(ruta)
-	if err != nil {
-		return "", fmt.Errorf(
-			"no se encontró el módulo '%s' (se buscó en '%s')",
-			nombreModulo,
-			ruta,
-		)
+	// 2) Búsqueda global: WINI_PATH, junto a winic y ubicaciones estándar.
+	// Permite 'winic /tmp/hola.wn' con 'importar "tiempo/tiempo"' sin
+	// copiar 'modulos/' junto al fuente.
+	variantes := variantesRelativo(relativo)
+	var probadas []string
+	for _, raiz := range raicesBusquedaModulos(dirActual) {
+		for _, v := range variantes {
+			if ruta, ok := probarRutaModuloEn(raiz, v); ok {
+				return ruta, nil
+			}
+			probadas = append(probadas, filepath.Join(raiz, v))
+		}
 	}
-
-	if info.IsDir() {
-		return "", fmt.Errorf(
-			"'%s' (%s) es un directorio, no un módulo",
-			nombreModulo,
-			ruta,
-		)
-	}
-
-	return ruta, nil
+	return "", fmt.Errorf(
+		"no se encontró el módulo '%s' (se buscó junto al archivo y en %d ubicacion(es) global(es): WINI_PATH=%q; probé p.ej. '%s')",
+		nombreModulo,
+		len(probadas),
+		os.Getenv("WINI_PATH"),
+		primeroDe(probadas),
+	)
 }
 
-// Un módulo .cwn o .wini es un archivo Wini que solo declara funciones
+// esBusquedaGlobalAplicable dice si 'relativo' puede buscarse globalmente.
+// Las rutas explícitamente relativas (./, ../) y las absolutas son
+// locales por definición: solo tienen sentido junto al archivo que importa.
+func esBusquedaGlobalAplicable(relativo string) bool {
+	if filepath.IsAbs(relativo) {
+		return false
+	}
+	limpio := filepath.Clean(relativo)
+	if limpio == "." || limpio == ".." ||
+		strings.HasPrefix(limpio, "."+string(filepath.Separator)) ||
+		strings.HasPrefix(limpio, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return true
+}
+
+// variantesRelativo genera las formas a probar dentro de cada raíz global.
+// - La forma tal cual ('tiempo/tiempo', 'system/sistem').
+// - Sin prefijo 'modulos/' o 'modules/' ('modulos/tiempo/tiempo' ->
+//   'tiempo/tiempo'), por compatibilidad con imports históricos.
+// - Si es un nombre corto sin separador ('tiempo'), además
+//   '<nombre>/<nombre>' ('tiempo/tiempo'), que es la convención de la
+//   stdlib instalada (modulos/tiempo/tiempo.cwn, etc).
+func variantesRelativo(relativo string) []string {
+	vistas := map[string]bool{}
+	var out []string
+	agregar := func(v string) {
+		v = filepath.Clean(v)
+		if !vistas[v] {
+			vistas[v] = true
+			out = append(out, v)
+		}
+	}
+	agregar(relativo)
+	sinPref := sinPrefijoModulos(relativo)
+	if sinPref != relativo {
+		agregar(sinPref)
+	}
+	if !strings.ContainsAny(relativo, "/\\") {
+		base := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(filepath.Base(relativo), ".cwn"), ".wini"), ".wn")
+		if base != "" && base != relativo {
+			// Por si vino con extensión y sin separador.
+			agregar(filepath.Join(base, filepath.Base(relativo)))
+		} else if ext := strings.ToLower(filepath.Ext(relativo)); ext == "" {
+			agregar(filepath.Join(relativo, relativo))
+			if sinPref != relativo {
+				agregar(filepath.Join(sinPref, sinPref))
+			}
+		}
+	} else if sinPref != relativo && !strings.ContainsAny(sinPref, "/\\") {
+		agregar(filepath.Join(sinPref, sinPref))
+	}
+	return out
+}
+
+// sinPrefijoModulos quita un primer segmento 'modulos' o 'modules'.
+func sinPrefijoModulos(relativo string) string {
+	partes := strings.FieldsFunc(relativo, func(r rune) bool { return r == '/' || r == '\\' })
+	if len(partes) > 1 && (partes[0] == "modulos" || partes[0] == "modules") {
+		return filepath.Join(partes[1:]...)
+	}
+	return relativo
+}
+
+// probarRutaModuloEn busca 'relativo' dentro de 'base', probando las
+// extensiones .cwn, .wini y .wn (en ese orden) si no trae una válida.
+// Devuelve la ruta existente, o ("", false) si no está ahí.
+func probarRutaModuloEn(base, relativo string) (string, bool) {
+	ext := strings.ToLower(filepath.Ext(relativo))
+	if ext == ".cwn" || ext == ".wini" || ext == ".wn" {
+		ruta := filepath.Join(base, relativo)
+		if info, err := os.Stat(ruta); err == nil && !info.IsDir() {
+			return ruta, true
+		}
+		return "", false
+	}
+	for _, extension := range []string{".cwn", ".wini", ".wn"} {
+		ruta := filepath.Join(base, relativo+extension)
+		if info, err := os.Stat(ruta); err == nil {
+			if info.IsDir() {
+				continue
+			}
+			return ruta, true
+		}
+	}
+	return "", false
+}
+
+// raicesBusquedaModulos devuelve las carpetas base para la búsqueda global
+// de módulos, en orden de prioridad (sin duplicados, solo existentes o
+// potencialmente válidas; no se filtran por existencia para no ocultar
+// errores de configuración en el mensaje final, pero se omiten vacías).
+func raicesBusquedaModulos(dirActual string) []string {
+	var raices []string
+	agregar := func(r string) {
+		if r == "" {
+			return
+		}
+		abs, err := filepath.Abs(r)
+		if err != nil {
+			abs = r
+		}
+		for _, e := range raices {
+			if e == abs {
+				return
+			}
+		}
+		raices = append(raices, abs)
+	}
+
+	// 1) $WINI_PATH: una o varias carpetas separadas por ':' (';' en Windows).
+	// Cada entrada se usa tal cual; si apunta a la raíz de instalación
+	// (contiene 'modulos/'), también se agrega su subcarpeta 'modulos'.
+	if wp := strings.TrimSpace(os.Getenv("WINI_PATH")); wp != "" {
+		for _, d := range filepath.SplitList(wp) {
+			d = strings.TrimSpace(d)
+			if d == "" {
+				continue
+			}
+			agregar(d)
+			agregar(filepath.Join(d, "modulos"))
+			agregar(filepath.Join(d, "modules"))
+		}
+	}
+
+	// 2) Junto al ejecutable winic (os.Executable resuelve symlinks de
+	// ~/.local/bin). Cubre instalación 'make install' (bin/ + share/wini)
+	// y el uso directo desde el repo (el binario junto a modulos/).
+	if exe, err := os.Executable(); err == nil {
+		if dirExe, err := filepath.EvalSymlinks(filepath.Dir(exe)); err == nil {
+			agregar(filepath.Join(dirExe, "modulos"))
+			agregar(filepath.Join(dirExe, "modules"))
+			agregar(dirExe)
+			agregar(filepath.Join(dirExe, "..", "modulos"))
+			agregar(filepath.Join(dirExe, "..", "share", "wini", "modulos"))
+			agregar(filepath.Join(dirExe, "..", "share", "wini"))
+		} else {
+			dirExe := filepath.Dir(exe)
+			agregar(filepath.Join(dirExe, "modulos"))
+			agregar(dirExe)
+			agregar(filepath.Join(dirExe, "..", "share", "wini", "modulos"))
+		}
+	}
+
+	// 3) Ubicaciones estándar de instalación.
+	if home, err := os.UserHomeDir(); err == nil {
+		agregar(filepath.Join(home, ".local", "share", "wini", "modulos"))
+		agregar(filepath.Join(home, ".local", "share", "wini"))
+		agregar(filepath.Join(home, ".wini", "modulos"))
+		agregar(filepath.Join(home, ".wini"))
+	}
+	agregar(filepath.Join(string(filepath.Separator), "usr", "local", "share", "wini", "modulos"))
+	agregar(filepath.Join(string(filepath.Separator), "usr", "local", "share", "wini"))
+	agregar(filepath.Join(string(filepath.Separator), "usr", "share", "wini", "modulos"))
+
+	// 4) Carpeta actual y 'modulos' del proyecto en curso (por si winic se
+	// invoca desde la raíz del proyecto con otro cwd que dirActual).
+	if cwd, err := os.Getwd(); err == nil {
+		agregar(filepath.Join(cwd, "modulos"))
+		agregar(cwd)
+	}
+	// dirActual ya se probó como local, pero su 'modulos' vecino también
+	// sirve (p.ej. fuente en build/ y módulos en ../modulos/).
+	if dirActual != "" && dirActual != "." {
+		agregar(filepath.Join(dirActual, "modulos"))
+		agregar(filepath.Join(dirActual, "..", "modulos"))
+	}
+
+	return raices
+}
+
+func primeroDe(lista []string) string {
+	if len(lista) == 0 {
+		return "(ninguna)"
+	}
+	return lista[0]
+}
+
+// Un módulo .wn, .cwn o .wini es un archivo Wini que solo declara funciones
 // en su nivel superior (una "biblioteca").
 //
 // 'importar nombre' localiza automáticamente:
@@ -328,4 +562,5 @@ func resolverRutaModulo(nombreModulo string, dirActual string) (string, error) {
 //   importar "otra/ruta.cwn"
 //   importar "otra/ruta.wini"
 //
-// Si no se especifica extensión, se intenta primero .cwn y después .wini.
+// Si no se especifica extensión, se intenta primero .cwn, después .wini y
+// finalmente .wn.

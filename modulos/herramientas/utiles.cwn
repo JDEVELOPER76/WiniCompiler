@@ -1,0 +1,16 @@
+# =====================================================================
+# herramientas/utiles.cwn — stdlib de Wini (capa de compatibilidad)
+# ---------------------------------------------------------------------
+# ESTE MÓDULO FUE UNIFICADO en libstd/texto. Todas las funciones de
+# tratamiento de cadenas y conversiones lista<->cadena viven ahora en
+# libstd/texto.
+#
+# Este archivo se mantiene únicamente como nota de compatibilidad. No
+# importa ni define nada: usá directamente libstd/texto en tu programa.
+#
+#   importar "libstd/texto" como t
+#   t.mayusculas("hola")
+#   t.cadena2lista("a b c")
+#   t.recortar("  hola  ")
+#   t.a_entero("  -42 ")
+# =====================================================================

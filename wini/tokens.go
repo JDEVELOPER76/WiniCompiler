@@ -77,8 +77,8 @@ var palabrasClave = map[string]bool{
 func compilarTokens() []DefinicionToken {
 	return []DefinicionToken{
 		{COMENTARIO, regexp.MustCompile(`#[^\n]*`)},
-		{CADENA_INTERPOLADA, regexp.MustCompile(`c"[^"\n]*"|c'[^'\n]*'`)},
-		{CADENA_TEXTO, regexp.MustCompile(`"[^"]*"|'[^']*'`)},
+		{CADENA_INTERPOLADA, regexp.MustCompile(`c"(?:[^"\\\n]|\\.)*"|c'(?:[^'\\\n]|\\.)*'`)},
+		{CADENA_TEXTO, regexp.MustCompile(`"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'`)},
 		{NINGUNO, regexp.MustCompile(`\b(nulo)\b`)},
 		{BOOLEANO, regexp.MustCompile(`\b(verdadero|falso)\b`)},
 		{DECIMAL, regexp.MustCompile(`\d+\.\d+`)},

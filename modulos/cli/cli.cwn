@@ -1,0 +1,135 @@
+# =====================================================================
+# cli.cwn — parseo de argumentos de línea de comandos (Wini puro)
+# ---------------------------------------------------------------------
+# En principal(argc, argv) el runtime de Wini te pasa argv COMPLETO,
+# con el nombre del programa en argv[0]. Usá cli_argv_sin_programa para
+# quitarlo antes de parsear:
+#
+#   funcion principal(argc: entero, argv: lista<cadena>) -> entero:
+#       CliArgs c = cli_parsear(cli_argv_sin_programa(argv))
+#
+# Este módulo separa los argumentos en opciones y posicionales:
+#
+#   --clave=valor    -> opciones["clave"] = "valor"
+#   --flag           -> opciones["flag"] = "verdadero"
+#   -a -b            -> opciones["a"] y opciones["b"] = "verdadero"
+#   -abc             -> lo mismo que "-a -b -c" (una letra cada una)
+#   --               -> fin de opciones: lo que viene después es todo
+#                       positional
+#   cualquier otra cosa (incluido '-' solo) -> positional, en orden
+#
+#   CliArgs c = cli_parsear(argv)
+#   cadena v = cli_valor(c, "salida", "por_defecto.txt")
+#   si cli_tiene(c, "verbose"):
+#   lista<cadena> pos = cli_posicionales(c)
+#
+# Importa libstd/texto para la conversión numérica de cli_entero.
+# =====================================================================
+
+importar "libstd/texto" como txt
+
+estructura CliArgs:
+    opciones: diccionario<cadena, cadena>
+    posicionales: lista<cadena>
+
+# ¿La cadena empieza con el prefijo dado?
+funcion cli_empieza(s: cadena, prefijo: cadena) -> booleano:
+    entero m = longitud(prefijo)
+    entero n = longitud(s)
+    si m > n:
+        retornar falso
+    entero i = 0
+    mientras i < m:
+        si s[i] != prefijo[i]:
+            retornar falso
+        i = i + 1
+    retornar verdadero
+
+# Corta s[ini..fin) con índices exclusivos.
+funcion cli_cortar(s: cadena, ini: entero, fin: entero) -> cadena:
+    cadena r = ""
+    entero i = ini
+    mientras i < fin:
+        r = r + s[i]
+        i = i + 1
+    retornar r
+
+# Devuelve argv sin el nombre del programa (argv[0]). Sirve para pasarle
+# el resultado directo a cli_parsear. Si la lista ya viene "limpia" (por
+# ejemplo en pruebas), no hace falta.
+funcion cli_argv_sin_programa(argv: lista<cadena>) -> lista<cadena>:
+    lista<cadena> r = []
+    entero i = 1
+    mientras i < longitud(argv):
+        r = agregar(r, argv[i])
+        i = i + 1
+    retornar r
+
+funcion cli_parsear(argv: lista<cadena>) -> CliArgs:
+    diccionario<cadena, cadena> opciones = {}
+    lista<cadena> posicionales = []
+    booleano fin_opciones = falso
+    para arg en argv:
+        si fin_opciones:
+            posicionales = agregar(posicionales, arg)
+            continuar
+        si arg == "--":
+            fin_opciones = verdadero
+            continuar
+        si cli_empieza(arg, "--"):
+            cadena cuerpo = cli_cortar(arg, 2, longitud(arg))
+            entero igual = -1
+            entero i = 0
+            mientras i < longitud(cuerpo):
+                si cuerpo[i] == "=":
+                    igual = i
+                    romper
+                i = i + 1
+            si igual < 0:
+                opciones[cuerpo] = "verdadero"
+            demas:
+                opciones[cli_cortar(cuerpo, 0, igual)] = cli_cortar(cuerpo, igual + 1, longitud(cuerpo))
+            continuar
+        si cli_empieza(arg, "-") y longitud(arg) > 1:
+            # banderas cortas: una letra por guión, de corrido
+            entero i2 = 1
+            mientras i2 < longitud(arg):
+                opciones[cli_cortar(arg, i2, i2 + 1)] = "verdadero"
+                i2 = i2 + 1
+            continuar
+        posicionales = agregar(posicionales, arg)
+    CliArgs c = CliArgs(opciones, posicionales)
+    retornar c
+
+funcion cli_tiene(c: CliArgs, clave: cadena) -> booleano:
+    para k en claves(c.opciones):
+        si k == clave:
+            retornar verdadero
+    retornar falso
+
+# Valor de la opción o 'defecto' si no está.
+funcion cli_valor(c: CliArgs, clave: cadena, defecto: cadena) -> cadena:
+    si cli_tiene(c, clave):
+        retornar c.opciones[clave]
+    retornar defecto
+
+# Valor entero de la opción (no numérico o ausente -> defecto).
+funcion cli_entero(c: CliArgs, clave: cadena, defecto: entero) -> entero:
+    si cli_tiene(c, clave):
+        cadena v = c.opciones[clave]
+        si txt.es_entero(v):
+            retornar txt.a_entero(v)
+    retornar defecto
+
+# Verdadero si la opción existe y no es "falso"/"0".
+funcion cli_activa(c: CliArgs, clave: cadena) -> booleano:
+    si cli_tiene(c, clave):
+        cadena v = c.opciones[clave]
+        retornar v != "falso" y v != "0"
+    retornar falso
+
+funcion cli_posicionales(c: CliArgs) -> lista<cadena>:
+    retornar c.posicionales
+
+funcion cli_cantidad_posicionales(c: CliArgs) -> entero:
+    retornar longitud(c.posicionales)

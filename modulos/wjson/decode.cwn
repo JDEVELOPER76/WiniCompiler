@@ -1,0 +1,254 @@
+# =====================================================================
+# decode.cwn — parser JSON texto -> JsonValor (Wini puro, autocontenido)
+# ---------------------------------------------------------------------
+# Los tipos JsonValor/JsonResultado vienen de tipos.cwn y el desescape
+# de escape.cwn (declarados como dependencias reales del módulo).
+#
+# Entrada: json_parse(texto) -> JsonResultado.
+# Si ok es falso, error trae "mensaje en pos N" y valor es nulo.
+# =====================================================================
+
+importar "escape" como esc
+importar "tipos" #para aceptar JsonResultado
+
+# --- utilidades de bajo nivel ------------------------------------------
+
+funcion json_dec_es_espacio(ch: cadena) -> booleano:
+    si ch == " ":
+        retornar verdadero
+    si ch == "\n":
+        retornar verdadero
+    si ch == "\r":
+        retornar verdadero
+    si ch == "\t":
+        retornar verdadero
+    retornar falso
+
+funcion json_dec_saltar(texto: cadena, pos: entero) -> entero:
+    entero n = longitud(texto)
+    mientras pos < n:
+        si json_dec_es_espacio(texto[pos]):
+            pos = pos + 1
+        demas:
+            romper
+    retornar pos
+
+funcion json_dec_cortar(texto: cadena, inicio: entero, fin: entero) -> cadena:
+    cadena r = ""
+    entero i = inicio
+    mientras i < fin:
+        r = r + texto[i]
+        i = i + 1
+    retornar r
+
+funcion json_dec_es_digito(ch: cadena) -> booleano:
+    retornar ch >= "0" y ch <= "9"
+
+# Construye un JsonResultado de error (valor nulo de relleno).
+funcion json_dec_error(mensaje: cadena, pos: entero) -> JsonResultado:
+    lista<JsonValor> h = []
+    diccionario<cadena, JsonValor> p = {}
+    JsonValor vnulo = JsonValor("nulo", "", 0.0, falso, h, p)
+    JsonResultado r = JsonResultado(falso, mensaje, pos, vnulo)
+    retornar r
+
+funcion json_dec_ok(valor: JsonValor, pos: entero) -> JsonResultado:
+    JsonResultado r = JsonResultado(verdadero, "", pos, valor)
+    retornar r
+
+# --- literales null / true / false -------------------------------------
+
+funcion json_parse_lit(texto: cadena, pos: entero) -> JsonResultado:
+    entero n = longitud(texto)
+    lista<JsonValor> h = []
+    diccionario<cadena, JsonValor> p = {}
+    si pos + 4 <= n:
+        si json_dec_cortar(texto, pos, pos + 4) == "null":
+            JsonValor v = JsonValor("nulo", "", 0.0, falso, h, p)
+            retornar json_dec_ok(v, pos + 4)
+    si pos + 4 <= n:
+        si json_dec_cortar(texto, pos, pos + 4) == "true":
+            JsonValor v = JsonValor("logico", "", 0.0, verdadero, h, p)
+            retornar json_dec_ok(v, pos + 4)
+    si pos + 5 <= n:
+        si json_dec_cortar(texto, pos, pos + 5) == "false":
+            JsonValor v = JsonValor("logico", "", 0.0, falso, h, p)
+            retornar json_dec_ok(v, pos + 5)
+    retornar json_dec_error(c"valor inválido en pos {pos}", pos)
+
+# --- números ------------------------------------------------------------
+
+funcion json_parse_num(texto: cadena, pos: entero) -> JsonResultado:
+    entero n = longitud(texto)
+    entero i = pos
+    si i < n:
+        si texto[i] == "-":
+            i = i + 1
+    si i >= n:
+        retornar json_dec_error(c"número incompleto en pos {pos}", pos)
+    si texto[i] == "0":
+        i = i + 1
+    sino si json_dec_es_digito(texto[i]):
+        mientras i < n:
+            si json_dec_es_digito(texto[i]):
+                i = i + 1
+            demas:
+                romper
+    demas:
+        retornar json_dec_error(c"número inválido en pos {pos}", pos)
+    si i < n:
+        si texto[i] == ".":
+            i = i + 1
+            si i >= n o no json_dec_es_digito(texto[i]):
+                retornar json_dec_error(c"decimal incompleto en pos {pos}", pos)
+            mientras i < n:
+                si json_dec_es_digito(texto[i]):
+                    i = i + 1
+                demas:
+                    romper
+    si i < n:
+        si texto[i] == "e" o texto[i] == "E":
+            i = i + 1
+            si i < n:
+                si texto[i] == "+" o texto[i] == "-":
+                    i = i + 1
+            si i >= n o no json_dec_es_digito(texto[i]):
+                retornar json_dec_error(c"exponente incompleto en pos {pos}", pos)
+            mientras i < n:
+                si json_dec_es_digito(texto[i]):
+                    i = i + 1
+                demas:
+                    romper
+    cadena crudo = json_dec_cortar(texto, pos, i)
+    decimal num = decimal(crudo)
+    lista<JsonValor> h = []
+    diccionario<cadena, JsonValor> p = {}
+    JsonValor v = JsonValor("numero", crudo, num, falso, h, p)
+    retornar json_dec_ok(v, i)
+
+# --- cadenas ------------------------------------------------------------
+
+funcion json_parse_str(texto: cadena, pos: entero) -> JsonResultado:
+    entero n = longitud(texto)
+    si pos >= n o texto[pos] != "\"":
+        retornar json_dec_error(c"se esperaba '\"' en pos {pos}", pos)
+    entero i = pos + 1
+    mientras i < n:
+        cadena ch = texto[i]
+        si ch == "\\":
+            i = i + 2
+        sino si ch == "\"":
+            romper
+        demas:
+            i = i + 1
+    si i >= n:
+        retornar json_dec_error(c"cadena sin cerrar desde pos {pos}", pos)
+    cadena crudo = json_dec_cortar(texto, pos + 1, i)
+    cadena val = esc.json_desescapar(crudo)
+    lista<JsonValor> h = []
+    diccionario<cadena, JsonValor> p = {}
+    JsonValor v = JsonValor("cadena", val, 0.0, falso, h, p)
+    retornar json_dec_ok(v, i + 1)
+
+# --- despacho -----------------------------------------------------------
+
+funcion json_parse_valor(texto: cadena, pos: entero) -> JsonResultado:
+    pos = json_dec_saltar(texto, pos)
+    entero n = longitud(texto)
+    si pos >= n:
+        retornar json_dec_error(c"fin inesperado en pos {pos}", pos)
+    cadena ch = texto[pos]
+    si ch == "\"":
+        retornar json_parse_str(texto, pos)
+    si ch == "{":
+        retornar json_parse_obj(texto, pos)
+    si ch == "[":
+        retornar json_parse_arr(texto, pos)
+    si ch == "t" o ch == "f" o ch == "n":
+        retornar json_parse_lit(texto, pos)
+    si ch == "-" o json_dec_es_digito(ch):
+        retornar json_parse_num(texto, pos)
+    retornar json_dec_error(c"carácter inesperado en pos {pos}", pos)
+
+# --- arreglos -----------------------------------------------------------
+
+funcion json_parse_arr(texto: cadena, pos: entero) -> JsonResultado:
+    entero n = longitud(texto)
+    pos = pos + 1
+    pos = json_dec_saltar(texto, pos)
+    lista<JsonValor> h = []
+    diccionario<cadena, JsonValor> p = {}
+    JsonValor arr = JsonValor("arreglo", "", 0.0, falso, h, p)
+    si pos < n:
+        si texto[pos] == "]":
+            retornar json_dec_ok(arr, pos + 1)
+    mientras verdadero:
+        JsonResultado r = json_parse_valor(texto, pos)
+        si no r.ok:
+            retornar r
+        arr.hijos = agregar(arr.hijos, r.valor)
+        pos = json_dec_saltar(texto, r.pos)
+        si pos >= n:
+            retornar json_dec_error("arreglo sin cerrar", pos)
+        si texto[pos] == ",":
+            pos = json_dec_saltar(texto, pos + 1)
+            si pos >= n:
+                retornar json_dec_error("coma colgante en arreglo", pos)
+        sino si texto[pos] == "]":
+            retornar json_dec_ok(arr, pos + 1)
+        demas:
+            retornar json_dec_error(c"se esperaba ',' o ']' en pos {pos}", pos)
+    retornar json_dec_error("arreglo sin cerrar", pos)
+
+# --- objetos ------------------------------------------------------------
+
+funcion json_parse_obj(texto: cadena, pos: entero) -> JsonResultado:
+    entero n = longitud(texto)
+    pos = pos + 1
+    pos = json_dec_saltar(texto, pos)
+    lista<JsonValor> h = []
+    diccionario<cadena, JsonValor> pd = {}
+    JsonValor obj = JsonValor("objeto", "", 0.0, falso, h, pd)
+    si pos < n:
+        si texto[pos] == "}":
+            retornar json_dec_ok(obj, pos + 1)
+    mientras verdadero:
+        pos = json_dec_saltar(texto, pos)
+        JsonResultado rk = json_parse_str(texto, pos)
+        si no rk.ok:
+            retornar rk
+        cadena clave = rk.valor.texto
+        pos = json_dec_saltar(texto, rk.pos)
+        si pos >= n o texto[pos] != ":":
+            retornar json_dec_error(c"se esperaba ':' en pos {pos}", pos)
+        pos = json_dec_saltar(texto, pos + 1)
+        JsonResultado rv = json_parse_valor(texto, pos)
+        si no rv.ok:
+            retornar rv
+        diccionario<cadena, JsonValor> tmp = obj.props
+        tmp[clave] = rv.valor
+        obj.props = tmp
+        pos = json_dec_saltar(texto, rv.pos)
+        si pos >= n:
+            retornar json_dec_error("objeto sin cerrar", pos)
+        si texto[pos] == ",":
+            pos = pos + 1
+        sino si texto[pos] == "}":
+            retornar json_dec_ok(obj, pos + 1)
+        demas:
+            retornar json_dec_error(c"se esperaba ',' o '}' en pos {pos}", pos)
+    retornar json_dec_error("objeto sin cerrar", pos)
+
+# --- entrada principal --------------------------------------------------
+
+funcion json_parse(texto: cadena) -> JsonResultado:
+    entero pos = json_dec_saltar(texto, 0)
+    si pos >= longitud(texto):
+        retornar json_dec_error("documento vacío", pos)
+    JsonResultado r = json_parse_valor(texto, pos)
+    si no r.ok:
+        retornar r
+    entero fin = json_dec_saltar(texto, r.pos)
+    si fin != longitud(texto):
+        retornar json_dec_error(c"texto extra después del valor en pos {fin}", fin)
+    retornar r

@@ -1,0 +1,306 @@
+# =====================================================================
+# libstd/texto — stdlib unificada: texto (cadenas) + std (listas<->cadena)
+# ---------------------------------------------------------------------
+# Este módulo UNIFICA modulos/texto y modulos/herramientas (stdlib v2) en
+# un solo punto de entrada. Todas las funciones de tratamiento de cadenas
+# y conversiones lista<->cadena viven acá.
+#
+#   importar "libstd/texto" como t
+#   t.minusculas("HOLA Mundo")      # "hola mundo"
+#   t.mayusculas("hola")            # "HOLA"
+#   t.unir(["a","b","c"], ",")      # "a,b,c"
+#   t.unir_espacio(["a","b","c"])   # "a b c"
+#   t.partir("a,b,c", ",")          # ["a","b","c"]
+#   t.reemplaza("aXbXc", "X", "-")  # "a-b-c"
+#   t.contiene("hola mundo", "mundo") # verdadero
+#   t.contar_veces("abab", "ab")    # 2
+#   t.recortar("  hola  ")          # "hola"
+#   t.invertir("hola")              # "aloh"
+#   t.capitalizar("hola mundo")     # "Hola mundo"
+#   t.a_entero("  -42 ")            # -42
+#   t.a_decimal("3,25")             # 3.25
+#   t.es_numero("123")              # verdadero
+#   t.es_entero("  -42 ")           # verdadero
+#   t.empieza_en("hola", "ho")      # verdadero
+#   t.termina_en("hola", "la")      # verdadero
+#   t.indice_de("hola", "la")       # 2
+#   t.subcadena("hola", 1, 3)       # "ol"
+#   t.cadena2lista("a b c")         # ["a","b","c"]
+#   t.lista2cadena(["a","b","c"])   # "a b c"
+#   t.repetir("wa", 3)              # "wawawa"
+#
+# Las funciones pesadas viven en C (codigo C/texto.c, libtexto.a).
+# Las envolturas son en Wini puro.
+# =====================================================================
+
+# --- Externas (implementadas en C, ver "codigo C/texto.c") ---
+
+externa "texto_minusculas"  como minusculas(s: cadena): cadena
+externa "texto_mayusculas"  como mayusculas(s: cadena): cadena
+externa "texto_unir"        como unir(elementos: lista<cadena>, sep: cadena): cadena
+externa "texto_partir"      como partir(s: cadena, sep: cadena): lista<cadena>
+externa "texto_reemplazar"  como reemplaza(s: cadena, viejo: cadena, nuevo: cadena): cadena
+externa "texto_contiene"    como contiene(s: cadena, sub: cadena): booleano
+externa "texto_contar"      como contar_veces(s: cadena, sub: cadena): entero
+externa "texto_recortar"    como recortar(s: cadena): cadena
+externa "texto_invertir"    como invertir(s: cadena): cadena
+externa "texto_capitalizar" como capitalizar(s: cadena): cadena
+externa "texto_a_entero"    como a_entero(s: cadena): entero
+externa "texto_a_decimal"   como a_decimal(s: cadena): decimal
+externa "texto_version"     como texto_version(): cadena
+
+# --- Envolturas de Wini puro (sin C) ---
+
+# Une una lista<cadena> con un solo espacio entre elementos (sin espacio final).
+funcion unir_espacio(elementos: lista<cadena>) -> cadena:
+    retornar unir(elementos, " ")
+
+# Repite 's' n veces (n <= 0 devuelve "").
+funcion repetir(s: cadena, n: entero) -> cadena:
+    cadena resultado = ""
+    entero i = 0
+    mientras i < n:
+        resultado = resultado + s
+        i = i + 1
+    retornar resultado
+
+# --- Conversiones lista <-> cadena -----------------------------------
+
+# Parte una cadena por espacios (los múltiples espacios seguidos no
+# generan vacíos). Devuelve lista<cadena>.
+funcion cadena2lista(value: cadena) -> lista<cadena>:
+    lista<cadena> resultado = []
+    cadena buffer = ""
+    entero blen = 0
+    para ch en value:
+        si ch == " ":
+            si blen > 0:
+                resultado = resultado + [buffer]
+                buffer = ""
+                blen = 0
+            demas:
+                buffer = buffer + ch
+                blen += 1
+    si blen > 0:
+        resultado = resultado + [buffer]
+    retornar resultado
+
+# Une una lista<cadena> con el separador dado.
+funcion unir_cadenas(value: lista<cadena>, sep: cadena) -> cadena:
+    retornar unir(value, sep)
+
+# Une una lista<cadena> con un solo espacio (alias de unir_espacio).
+funcion lista2cadena(value: lista<cadena>) -> cadena:
+    retornar unir_espacio(value)
+
+# --- Predicados de cadena --------------------------------------------
+
+# Verdadero si todos los caracteres son minúsculas (a-z).
+funcion es_minuscula(value: cadena) -> booleano:
+    para char en value:
+        si char < 'a' o char > 'z':
+            retornar falso
+    retornar verdadero
+
+# Verdadero si todos los caracteres son mayúsculas (A-Z).
+funcion es_mayuscula(value: cadena) -> booleano:
+    para char en value:
+        si char < 'A' o char > 'Z':
+            retornar falso
+    retornar verdadero
+
+# Verdadero si hay al menos una minúscula.
+funcion contiene_minuscula(value: cadena) -> booleano:
+    para char en value:
+        si char >= 'a' y char <= 'z':
+            retornar verdadero
+    retornar falso
+
+# Verdadero si hay al menos una mayúscula.
+funcion contiene_mayuscula(value: cadena) -> booleano:
+    para char en value:
+        si char >= 'A' y char <= 'Z':
+            retornar verdadero
+    retornar falso
+
+# Verdadero si hay al menos un dígito (0-9).
+funcion contiene_numero(value: cadena) -> booleano:
+    para ch en value:
+        si ch >= '0' y ch <= '9':
+            retornar verdadero
+    retornar falso
+
+# Verdadero si 'value' empieza con 'param'.
+funcion empieza_en(value: cadena, param: cadena) -> booleano:
+    entero n = longitud(param)
+    entero m = longitud(value)
+    si n > m:
+        retornar falso
+    entero i = 0
+    mientras i < n:
+        si value[i] != param[i]:
+            retornar falso
+        i = i + 1
+    retornar verdadero
+
+# Verdadero si 'value' termina con 'param'.
+funcion termina_en(value: cadena, param: cadena) -> booleano:
+    entero n = longitud(param)
+    entero m = longitud(value)
+    si n > m:
+        retornar falso
+    entero i = 0
+    mientras i < n:
+        si value[m - n + i] != param[i]:
+            retornar falso
+        i = i + 1
+    retornar verdadero
+
+# Verdadero si la cadena está vacía (longitud 0).
+funcion es_vacia(value: cadena) -> booleano:
+    retornar longitud(value) == 0
+
+# Verdadero si la cadena solo tiene espacios.
+funcion es_espacio(value: cadena) -> booleano:
+    si longitud(value) == 0:
+        retornar falso
+    para ch en value:
+        si ch != " ":
+            retornar falso
+    retornar verdadero
+
+# Verdadero si solo tiene letras (a-z, A-Z).
+funcion es_alfabetico(value: cadena) -> booleano:
+    si longitud(value) == 0:
+        retornar falso
+    para ch en value:
+        si ch >= 'a' y ch <= 'z':
+            continuar
+        si ch >= 'A' y ch <= 'Z':
+            continuar
+        retornar falso
+    retornar verdadero
+
+# Verdadero si solo tiene letras o dígitos.
+funcion es_alfanumerico(value: cadena) -> booleano:
+    si longitud(value) == 0:
+        retornar falso
+    para ch en value:
+        si ch >= 'a' y ch <= 'z':
+            continuar
+        si ch >= 'A' y ch <= 'Z':
+            continuar
+        si ch >= '0' y ch <= '9':
+            continuar
+        retornar falso
+    retornar verdadero
+
+# Verdadero si solo tiene dígitos (0-9).
+funcion es_numero(value: cadena) -> booleano:
+    si longitud(value) == 0:
+        retornar falso
+    para ch en value:
+        si ch < '0' o ch > '9':
+            retornar falso
+    retornar verdadero
+
+# Verdadero si es un entero válido (con espacios y signo opcional).
+funcion es_entero(value: cadena) -> booleano:
+    entero i = 0
+    entero n = longitud(value)
+    mientras i < n y (value[i] == " " o value[i] == "\t"):
+        i = i + 1
+    si i < n y (value[i] == "-" o value[i] == "+"):
+        i = i + 1
+    si i >= n:
+        retornar falso
+    mientras i < n:
+        si value[i] < "0" o value[i] > "9":
+            retornar falso
+        i = i + 1
+    mientras i < n:
+        si value[i] != " " y value[i] != "\t":
+            retornar falso
+        i = i + 1
+    retornar verdadero
+
+# --- Transformaciones de cadena (Wini puro) --------------------------
+
+# Pasa a mayúsculas solo las letras a-z (implementación en Wini puro;
+# para la versión rápida en C usar mayusculas()).
+funcion a_mayusculas(value: cadena) -> cadena:
+    cadena minus = "abcdefghijklmnopqrstuvwxyz"
+    cadena mayus = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    cadena resultado = ""
+    para ch en value:
+        si ch >= 'a' y ch <= 'z':
+            entero k = 0
+            mientras minus[k] != ch:
+                k += 1
+            resultado = resultado + mayus[k]
+        demas:
+            resultado = resultado + ch
+    retornar resultado
+
+# Pasa a minúsculas solo las letras A-Z (implementación en Wini puro;
+# para la versión rápida en C usar minusculas()).
+funcion a_minusculas(value: cadena) -> cadena:
+    cadena minus = "abcdefghijklmnopqrstuvwxyz"
+    cadena mayus = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    cadena resultado = ""
+    para ch en value:
+        si ch >= 'A' y ch <= 'Z':
+            entero k = 0
+            mientras mayus[k] != ch:
+                k += 1
+            resultado = resultado + minus[k]
+        demas:
+            resultado = resultado + ch
+    retornar resultado
+
+# Alias de invertir() para compatibilidad.
+funcion invertir_cadena(value: cadena) -> cadena:
+    retornar invertir(value)
+
+# --- Búsqueda y subcadena --------------------------------------------
+
+# Índice de la primera aparición de 'sub' en 'value' (no solapadas).
+# Devuelve -1 si no se encuentra.
+funcion indice_de(value: cadena, sub: cadena) -> entero:
+    entero n = longitud(value)
+    entero m = longitud(sub)
+    si m == 0:
+        retornar 0
+    si m > n:
+        retornar -1
+    entero i = 0
+    mientras i <= n - m:
+        entero j = 0
+        mientras j < m:
+            si value[i + j] != sub[j]:
+                romper
+            j += 1
+        si j == m:
+            retornar i
+        i = i + 1
+    retornar -1
+
+# Corta desde 'inicio' hasta 'fin' (índices exclusivos).
+funcion subcadena(value: cadena, inicio: entero, fin: entero) -> cadena:
+    entero n = longitud(value)
+    si inicio < 0:
+        inicio = 0
+    si fin > n:
+        fin = n
+    si inicio >= fin:
+        retornar ""
+    cadena resultado = ""
+    entero i = inicio
+    mientras i < fin:
+        resultado = resultado + value[i]
+        i = i + 1
+    retornar resultado
+
+# --- Versión ---------------------------------------------------------
+
+# La versión se obtiene con t.version() (externa C).

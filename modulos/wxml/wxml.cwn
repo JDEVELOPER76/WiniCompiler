@@ -1,0 +1,90 @@
+# =====================================================================
+# wxml.cwn — uso FÁCIL de wxml con UN solo importar (Wini puro)
+# ---------------------------------------------------------------------
+# Capas reales (no amalgamado): importa tipos, encode, decode y archivo;
+# el compilador resuelve lo transitivo solo.
+#
+#   importar "wxml/wxml" como xml
+#
+#   XmlResultado r = xml.xml_abrir("datos.xml")    # archivo
+#   XmlResultado t = xml.xml_cargar("<a>x</a>")    # texto
+#   cadena b = xml.xml_bonito(r.valor, 2)          # indentado
+#   xml.xml_guardar("salida.xml", r.valor)         # compacto
+#   xml.xml_guardar_bonito("linda.xml", r.valor, 2)
+#   xml.xml_guardar_documento("doc.xml", r.valor)  # con cabecera
+#
+# Los tipos XmlNodo/XmlResultado los aporta tipos.cwn (vía imports):
+# NO hay que definirlos en tu archivo. Sin 'principal'.
+# =====================================================================
+
+importar "tipos" como tipos
+importar "encode" como enc
+importar "decode" como dec
+importar "archivo" como archivo
+
+# Parsea un texto XML que ya tienes en memoria.
+funcion xml_cargar(texto: cadena) -> XmlResultado:
+    retornar dec.xml_parse(texto)
+
+# Abre un archivo y lo parsea. Si no existe o el XML es inválido,
+# ok es falso y error explica el motivo.
+funcion xml_abrir(ruta: cadena) -> XmlResultado:
+    si no archivo.xml_existe(ruta):
+        diccionario<cadena, cadena> attrs = {}
+        lista<XmlNodo> h = []
+        XmlNodo vnulo = XmlNodo("", "", attrs, h)
+        XmlResultado r = XmlResultado(falso, c"no existe el archivo: {ruta}", 0, vnulo)
+        retornar r
+    cadena texto = archivo.xml_cargar_texto(ruta)
+    retornar dec.xml_parse(texto)
+
+# Guarda el nodo en compacto. Verdadero si se escribió completo.
+funcion xml_guardar(ruta: cadena, valor: XmlNodo) -> booleano:
+    retornar archivo.xml_guardar_texto(ruta, enc.xml_codificar(valor))
+
+# Guarda el nodo con indentación (espacios por nivel, 0 = compacto).
+funcion xml_guardar_bonito(ruta: cadena, valor: XmlNodo, espacios: entero) -> booleano:
+    retornar archivo.xml_guardar_texto(ruta, enc.xml_codificar_con(valor, espacios))
+
+# Guarda con cabecera <?xml ...?> en compacto.
+funcion xml_guardar_documento(ruta: cadena, valor: XmlNodo) -> booleano:
+    retornar archivo.xml_guardar_texto(ruta, enc.xml_codificar_documento(valor))
+
+# Guarda con cabecera <?xml ...?> e indentación.
+funcion xml_guardar_documento_bonito(ruta: cadena, valor: XmlNodo, espacios: entero) -> booleano:
+    retornar archivo.xml_guardar_texto(ruta, enc.xml_codificar_documento_con(valor, espacios))
+
+# Devuelve el nodo como texto con indentación (para mostrar en terminal).
+funcion xml_bonito(valor: XmlNodo, espacios: entero) -> cadena:
+    retornar enc.xml_codificar_con(valor, espacios)
+
+# Devuelve el documento completo (cabecera + nodo) como texto.
+funcion xml_documento(valor: XmlNodo) -> cadena:
+    retornar enc.xml_codificar_documento(valor)
+
+# Devuelve el documento completo con indentación.
+funcion xml_documento_bonito(valor: XmlNodo, espacios: entero) -> cadena:
+    retornar enc.xml_codificar_documento_con(valor, espacios)
+
+# --- Atajos para armar árboles rápido (nombres distintos a tipos.cwn) ---
+
+funcion xml_crear(etiqueta: cadena) -> XmlNodo:
+    retornar tipos.xml_nodo(etiqueta)
+
+funcion xml_crear_texto(etiqueta: cadena, texto: cadena) -> XmlNodo:
+    retornar tipos.xml_nodo_texto(etiqueta, texto)
+
+funcion xml_con_atributo(v: XmlNodo, clave: cadena, valor: cadena) -> XmlNodo:
+    retornar tipos.xml_poner_atributo(v, clave, valor)
+
+funcion xml_con_hijo(v: XmlNodo, hijo: XmlNodo) -> XmlNodo:
+    retornar tipos.xml_agregar_hijo(v, hijo)
+
+funcion xml_con_texto(v: XmlNodo, texto: cadena) -> XmlNodo:
+    retornar tipos.xml_poner_texto(v, texto)
+
+# Crea un hijo con texto y lo agrega al padre en un paso.
+# Devuelve el padre actualizado.
+funcion xml_hijo_texto(padre: XmlNodo, etiqueta: cadena, texto: cadena) -> XmlNodo:
+    XmlNodo hijo = tipos.xml_nodo_texto(etiqueta, texto)
+    retornar tipos.xml_agregar_hijo(padre, hijo)

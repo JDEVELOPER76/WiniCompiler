@@ -1,0 +1,41 @@
+# =====================================================================
+# dl/dl — carga dinámica de librerías compartidas (.so / .dll)
+# ---------------------------------------------------------------------
+# Envoltorio en Wini de las funciones C de "codigo C/dl.c" (dlopen /
+# dlsym / LoadLibrary / GetProcAddress). Permite cargar una librería,
+# buscar símbolos y llamar a funciones expuestas por ella.
+#
+#   importar "dl/dl" como dl
+#   entero h = dl.open("./libmimodulo.so")
+#   si h == 0:
+#       escribir("error: " + dl.error())
+#       retornar 1
+#   entero dir = dl.sym(h, "mi_funcion")
+#   entero r = dl.call_entero(h, "mi_funcion", 21, 21)
+#   escribir(r)                        # 42
+#   cadena c = dl.call_cadena(h, "saluda", "mundo")
+#   escribir(c)
+#   dl.close(h)
+#
+# Nombres cortos: open, close, sym, call_entero, call_cadena, error,
+# version.
+#
+# Convención: los argumentos cadena se consumen; desde Wini no hay que
+# hacer nada especial.
+# =====================================================================
+
+# --- Externas (implementadas en C, ver "codigo C/dl.c") ---
+
+externa "dl_open"      como open(ruta: cadena): entero
+externa "dl_close"     como close(handle: entero): booleano
+externa "dl_sym"       como sym(handle: entero, nombre: cadena): entero
+externa "dl_error"     como ultimo_error(): cadena
+externa "dl_call_entero"  como call_entero(handle: entero, nombre: cadena, a: entero, b: entero): entero
+externa "dl_call_cadena"  como call_cadena(handle: entero, nombre: cadena, s: cadena): cadena
+externa "dl_version"      como version_dl(): cadena
+
+# --- Envolturas de conveniencia (Wini puro) ---
+
+# Versión del módulo (alias de version_dl).
+funcion modulo_version_dl() -> cadena:
+    retornar version_dl()

@@ -1,0 +1,138 @@
+# =====================================================================
+# tipos.cwn — JsonValor/JsonResultado + constructores y predicados
+# ---------------------------------------------------------------------
+# Este módulo define las estructuras (winic con soporte de ESTRUCTURA en
+# módulos) y NO requiere nada en el archivo principal: basta importar.
+#
+# Clases válidas en 'clase': "nulo", "logico", "numero", "cadena",
+# "arreglo", "objeto".
+# Sin dependencias: solo builtins (longitud, agregar, en, etc.).
+# =====================================================================
+
+estructura JsonValor:
+    clase: cadena
+    texto: cadena
+    numero: decimal
+    logico: booleano
+    hijos: lista<JsonValor>
+    props: diccionario<cadena, JsonValor>
+
+estructura JsonResultado:
+    ok: booleano
+    error: cadena
+    pos: entero
+    valor: JsonValor
+
+# --- constructores -----------------------------------------------------
+
+funcion json_nulo() -> JsonValor:
+    lista<JsonValor> h = []
+    diccionario<cadena, JsonValor> p = {}
+    JsonValor v = JsonValor("nulo", "", 0.0, falso, h, p)
+    retornar v
+
+funcion json_bool(valor: booleano) -> JsonValor:
+    lista<JsonValor> h = []
+    diccionario<cadena, JsonValor> p = {}
+    JsonValor v = JsonValor("logico", "", 0.0, valor, h, p)
+    retornar v
+
+funcion json_numero(valor: decimal) -> JsonValor:
+    lista<JsonValor> h = []
+    diccionario<cadena, JsonValor> p = {}
+    JsonValor v = JsonValor("numero", "", valor, falso, h, p)
+    retornar v
+
+funcion json_numero_entero(valor: entero) -> JsonValor:
+    lista<JsonValor> h = []
+    diccionario<cadena, JsonValor> p = {}
+    JsonValor v = JsonValor("numero", "", decimal(valor), falso, h, p)
+    retornar v
+
+funcion json_cadena(texto: cadena) -> JsonValor:
+    lista<JsonValor> h = []
+    diccionario<cadena, JsonValor> p = {}
+    JsonValor v = JsonValor("cadena", texto, 0.0, falso, h, p)
+    retornar v
+
+funcion json_arreglo(hijos: lista<JsonValor>) -> JsonValor:
+    diccionario<cadena, JsonValor> p = {}
+    JsonValor v = JsonValor("arreglo", "", 0.0, falso, hijos, p)
+    retornar v
+
+funcion json_objeto(props: diccionario<cadena, JsonValor>) -> JsonValor:
+    lista<JsonValor> h = []
+    JsonValor v = JsonValor("objeto", "", 0.0, falso, h, props)
+    retornar v
+
+funcion json_arreglo_vacio() -> JsonValor:
+    lista<JsonValor> h = []
+    diccionario<cadena, JsonValor> p = {}
+    JsonValor v = JsonValor("arreglo", "", 0.0, falso, h, p)
+    retornar v
+
+funcion json_objeto_vacio() -> JsonValor:
+    lista<JsonValor> h = []
+    diccionario<cadena, JsonValor> p = {}
+    JsonValor v = JsonValor("objeto", "", 0.0, falso, h, p)
+    retornar v
+
+# --- predicados --------------------------------------------------------
+
+funcion json_es_nulo(v: JsonValor) -> booleano:
+    retornar v.clase == "nulo"
+
+funcion json_es_bool(v: JsonValor) -> booleano:
+    retornar v.clase == "logico"
+
+funcion json_es_numero(v: JsonValor) -> booleano:
+    retornar v.clase == "numero"
+
+funcion json_es_cadena(v: JsonValor) -> booleano:
+    retornar v.clase == "cadena"
+
+funcion json_es_arreglo(v: JsonValor) -> booleano:
+    retornar v.clase == "arreglo"
+
+funcion json_es_objeto(v: JsonValor) -> booleano:
+    retornar v.clase == "objeto"
+
+# --- accesores simples -------------------------------------------------
+
+funcion json_como_texto(v: JsonValor) -> cadena:
+    retornar v.texto
+
+funcion json_como_numero(v: JsonValor) -> decimal:
+    retornar v.numero
+
+funcion json_como_bool(v: JsonValor) -> booleano:
+    retornar v.logico
+
+funcion json_arreglo_len(v: JsonValor) -> entero:
+    retornar longitud(v.hijos)
+
+funcion json_objeto_len(v: JsonValor) -> entero:
+    retornar longitud(v.props)
+
+funcion json_objeto_tiene(v: JsonValor, clave: cadena) -> booleano:
+    retornar clave en v.props
+
+funcion json_arreglo_obtener(v: JsonValor, idx: entero) -> JsonValor:
+    retornar v.hijos[idx]
+
+funcion json_objeto_obtener(v: JsonValor, clave: cadena) -> JsonValor:
+    retornar v.props[clave]
+
+# --- mutadores (devuelven el valor actualizado) ------------------------
+# OJO: diccionarios dentro de estructuras no admiten asignación directa
+# del tipo 'v.props[k] = x'; por eso se copia a un temporal y se reasigna.
+
+funcion json_arreglo_agregar(v: JsonValor, item: JsonValor) -> JsonValor:
+    v.hijos = agregar(v.hijos, item)
+    retornar v
+
+funcion json_objeto_poner(v: JsonValor, clave: cadena, item: JsonValor) -> JsonValor:
+    diccionario<cadena, JsonValor> tmp = v.props
+    tmp[clave] = item
+    v.props = tmp
+    retornar v

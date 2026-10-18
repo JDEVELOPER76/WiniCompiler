@@ -1,0 +1,94 @@
+# =====================================================================
+# base64.cwn — base64 y hexadecimal para Wini (implementado en C)
+# ---------------------------------------------------------------------
+# API por BYTES (lista<entero> 0-255). Las funciones viven en C
+# (ver "codigo C/base64.c", libbase64.a) y son rápidas.
+#
+#   importar "base64/base64" como b64
+#   cadena s = b64.codificar([72, 101, 108, 108, 111])   # "SGVsbG8="
+#   lista<entero> b = b64.decodificar("SGVsbG8=")          # [72,101,108,108,111]
+#   cadena h = b64.codificar_hex([72, 101])                # "4865"
+#   lista<entero> b2 = b64.decodificar_hex("4865")         # [72, 101]
+#
+# Los nombres originales (b64_*) se mantienen por compatibilidad y
+# llaman ahora a la implementación en C.
+# =====================================================================
+
+# --- Externas (implementadas en C, ver "codigo C/base64.c") ---
+
+externa "b64_codificar"        como codificar(bytes: lista<entero>): cadena
+externa "b64_decodificar"      como decodificar(texto: cadena): lista<entero>
+externa "b64_codificar_hex"    como codificar_hex(bytes: lista<entero>): cadena
+externa "b64_decodificar_hex"  como decodificar_hex(texto: cadena): lista<entero>
+externa "b64_version"          como b64_version(): cadena
+
+# --- Funciones auxiliares y helpers de texto (Wini puro, sin C) ---
+
+funcion b64_alfabeto() -> cadena:
+    retornar "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+funcion b64_imprimibles() -> cadena:
+    retornar " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+
+funcion b64_chr(code: entero) -> cadena:
+    si code < 32 o code > 126:
+        retornar "?"
+    cadena t = b64_imprimibles()
+    retornar t[code - 32]
+
+funcion b64_ord(ch: cadena) -> entero:
+    si longitud(ch) == 0:
+        retornar -1
+    cadena t = b64_imprimibles()
+    entero i = 0
+    entero n = longitud(t)
+    mientras i < n:
+        si t[i] == ch:
+            retornar i + 32
+        i = i + 1
+    retornar -1
+
+# texto <-> bytes (ASCII, con el límite documentado del runtime Wini).
+
+funcion b64_texto_a_bytes(t: cadena) -> lista<entero>:
+    lista<entero> r = []
+    para ch en t:
+        si ch == "\t":
+            r = agregar(r, 9)
+        sino si ch == "\n":
+            r = agregar(r, 10)
+        sino si ch == "\r":
+            r = agregar(r, 13)
+        demas:
+            entero c = b64_ord(ch)
+            si c < 0:
+                lanzar ValueError(c"b64_texto_a_bytes: carácter no ASCII en la posición {longitud(r)}")
+            r = agregar(r, c)
+    retornar r
+
+funcion b64_bytes_a_texto(b: lista<entero>) -> cadena:
+    cadena r = ""
+    para v en b:
+        si v == 9:
+            r = r + "\t"
+        sino si v == 10:
+            r = r + "\n"
+        sino si v == 13:
+            r = r + "\r"
+        demas:
+            r = r + b64_chr(v)
+    retornar r
+
+# Valor de un carácter base64 (0-63), o -1 si no es válido.
+
+funcion b64_valor(ch: cadena) -> entero:
+    cadena a = b64_alfabeto()
+    entero i = 0
+    entero n = longitud(a)
+    mientras i < n:
+        si a[i] == ch:
+            retornar i
+        i = i + 1
+    retornar -1
+
+# Versión del módulo: usar b64_version()

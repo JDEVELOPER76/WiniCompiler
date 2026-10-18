@@ -1,0 +1,112 @@
+# =====================================================================
+# encode.cwn — serialización XmlNodo -> texto XML (Wini puro)
+# ---------------------------------------------------------------------
+# Los tipos XmlNodo vienen de tipos.cwn y el escape de escape.cwn
+# (declarados como dependencias reales del módulo).
+#
+#   xml_codificar(v)                : compacto, una línea
+#   xml_codificar_con(v, espacios)  : bonito con N espacios por nivel
+#                                     (0 = compacto, 2 clásico, 4 amplio)
+#   xml_codificar_documento(v)      : cabecera + compacto
+#   xml_codificar_documento_con(v, espacios): cabecera + bonito
+#
+# Reglas:
+# - Sin texto ni hijos => <et/> (self-closing).
+# - Solo texto        => <et>texto</et> en la misma línea.
+# - Solo hijos        => apertura, un hijo por línea, cierre.
+# - Mixto (texto+hijos)=> apertura + texto y luego hijos en líneas.
+# =====================================================================
+
+importar "escape" como esc
+importar "tipos" como tip
+
+funcion xml_codificar(v: XmlNodo) -> cadena:
+    cadena attrs = xml_enc_atributos(v)
+    si longitud(v.hijos) == 0 y longitud(v.texto) == 0:
+        retornar "<" + v.etiqueta + attrs + "/>"
+    cadena r = "<" + v.etiqueta + attrs + ">"
+    si longitud(v.texto) > 0:
+        r = r + esc.xml_escapar_texto(v.texto)
+    entero i = 0
+    entero n = longitud(v.hijos)
+    mientras i < n:
+        r = r + xml_codificar(v.hijos[i])
+        i = i + 1
+    r = r + "</" + v.etiqueta + ">"
+    retornar r
+
+# Repite una unidad de indentación 'nivel' veces.
+funcion xml_enc_indent_n(nivel: entero, espacios: entero) -> cadena:
+    cadena r = ""
+    entero i = 0
+    mientras i < nivel:
+        entero k = 0
+        mientras k < espacios:
+            r = r + " "
+            k = k + 1
+        i = i + 1
+    retornar r
+
+# Repite 2 espacios 'nivel' veces (compatibilidad).
+funcion xml_enc_indent(nivel: entero) -> cadena:
+    retornar xml_enc_indent_n(nivel, 2)
+
+# Serializa los atributos como ' k="v" ...' ("" si no hay).
+funcion xml_enc_atributos(v: XmlNodo) -> cadena:
+    cadena r = ""
+    lista<cadena> ks = claves(v.atributos)
+    entero j = 0
+    entero m = longitud(ks)
+    mientras j < m:
+        cadena k = ks[j]
+        r = r + " " + k + "=\"" + esc.xml_escapar_atributo(v.atributos[k]) + "\""
+        j = j + 1
+    retornar r
+
+funcion xml_codificar_nivel(v: XmlNodo, nivel: entero) -> cadena:
+    retornar xml_codificar_nivel_con(v, nivel, 2)
+
+funcion xml_codificar_nivel_con(v: XmlNodo, nivel: entero, espacios: entero) -> cadena:
+    cadena attrs = xml_enc_atributos(v)
+    cadena ind = xml_enc_indent_n(nivel, espacios)
+    entero nh = longitud(v.hijos)
+    entero nt = longitud(v.texto)
+    si nh == 0 y nt == 0:
+        retornar ind + "<" + v.etiqueta + attrs + "/>"
+    si nh == 0:
+        retornar ind + "<" + v.etiqueta + attrs + ">" + esc.xml_escapar_texto(v.texto) + "</" + v.etiqueta + ">"
+    si nt == 0:
+        cadena r = ind + "<" + v.etiqueta + attrs + ">\n"
+        entero i = 0
+        mientras i < nh:
+            r = r + xml_codificar_nivel_con(v.hijos[i], nivel + 1, espacios) + "\n"
+            i = i + 1
+        r = r + ind + "</" + v.etiqueta + ">"
+        retornar r
+    cadena r2 = ind + "<" + v.etiqueta + attrs + ">" + esc.xml_escapar_texto(v.texto) + "\n"
+    entero j = 0
+    mientras j < nh:
+        r2 = r2 + xml_codificar_nivel_con(v.hijos[j], nivel + 1, espacios) + "\n"
+        j = j + 1
+    r2 = r2 + ind + "</" + v.etiqueta + ">"
+    retornar r2
+
+funcion xml_codificar_con(v: XmlNodo, espacios: entero) -> cadena:
+    si espacios < 0:
+        espacios = 0
+    si espacios == 0:
+        retornar xml_codificar(v)
+    retornar xml_codificar_nivel_con(v, 0, espacios)
+
+funcion xml_codificar_bonito(v: XmlNodo) -> cadena:
+    retornar xml_codificar_nivel(v, 0)
+
+# --- documento completo (con cabecera) ---------------------------------
+
+funcion xml_codificar_documento(v: XmlNodo) -> cadena:
+    retornar "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" + xml_codificar(v)
+
+funcion xml_codificar_documento_con(v: XmlNodo, espacios: entero) -> cadena:
+    si espacios <= 0:
+        retornar xml_codificar_documento(v)
+    retornar "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" + xml_codificar_nivel_con(v, 0, espacios)

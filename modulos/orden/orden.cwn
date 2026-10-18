@@ -1,0 +1,30 @@
+# =====================================================================
+# orden.cwn — ordenamiento y búsqueda binaria (implementado en C)
+# ---------------------------------------------------------------------
+# Quicksort rápido en C (ver "codigo C/orden.c", liborden.a). Devuelve
+# listas NUEVAS; las de entrada no se tocan.
+#
+#   importar "orden/orden" como ord
+#   lista<entero> l = ord.enteros([3, 1, 2])        # [1, 2, 3]
+#   lista<cadena> c = ord.cadenas(["b", "a"])       # ["a", "b"]
+#   entero i = ord.busqueda_binaria_enteros([1,2,3], 2)   # 1
+#
+# Los nombres originales (ord_*) se mantienen por compatibilidad y
+# llaman ahora a la implementación en C.
+# =====================================================================
+
+# --- Externas (implementadas en C, ver "codigo C/orden.c") ---
+
+externa "ord_enteros"                    como enteros(l: lista<entero>): lista<entero>
+externa "ord_enteros_desc"               como enteros_desc(l: lista<entero>): lista<entero>
+externa "ord_decimales"                  como decimales(l: lista<decimal>): lista<decimal>
+externa "ord_decimales_desc"             como decimales_desc(l: lista<decimal>): lista<decimal>
+externa "ord_cadenas"                    como cadenas(l: lista<cadena>): lista<cadena>
+externa "ord_cadenas_desc"               como cadenas_desc(l: lista<cadena>): lista<cadena>
+externa "ord_busqueda_binaria_enteros"   como busqueda_binaria_enteros(l: lista<entero>, x: entero): entero
+externa "ord_busqueda_binaria_cadenas"   como busqueda_binaria_cadenas(l: lista<cadena>, x: cadena): entero
+externa "ord_version"           como orden_version(): cadena
+
+# Nota: las funciones con nombre corto (enteros, decimales, cadenas, etc.)
+# son las externas C directamente. No hay wrappers Wini adicionales para
+# evitar redefinición de símbolos C.

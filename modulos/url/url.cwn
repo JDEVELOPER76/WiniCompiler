@@ -1,0 +1,179 @@
+# =====================================================================
+# url.cwn — codificación de URLs y consulta (query string) para Wini
+# ---------------------------------------------------------------------
+#   cadena s = url.url_codificar("a b&c=d")     # "a%20b%26c%3Dd"
+#   cadena t = url.url_decodificar(s)           # "a b&c=d"
+#   diccionario<cadena,cadena> q = url.url_parsear_consulta("a=1&b=hola+mundo")
+#   cadena u = url.url_armar_consulta(q)        # "a=1&b=hola%20mundo"
+#
+# 'url_codificar' deja pasar sin escapar los caracteres seguros de una URL
+# (letras, dígitos y - _ . ~ / ? : @) y percent-encodea el resto — entre
+# ellos '&', '=', '+' y '#', que son estructurales en una query.
+# Los acentos y UTF-8 quedan tal cual (documentado: el runtime no expone
+# el valor numérico de un byte, ver base64.cwn).
+# 'url_decodificar' entiende %XX y '+' como espacio.
+# Sin imports. Solo builtins.
+# =====================================================================
+
+funcion url_imprimibles() -> cadena:
+    retornar " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+
+funcion url_chr(code: entero) -> cadena:
+    si code < 32 o code > 126:
+        retornar "?"
+    cadena t = url_imprimibles()
+    retornar t[code - 32]
+
+funcion url_ord(ch: cadena) -> entero:
+    cadena t = url_imprimibles()
+    entero i = 0
+    entero n = longitud(t)
+    mientras i < n:
+        si t[i] == ch:
+            retornar i + 32
+        i = i + 1
+    retornar -1
+
+funcion url_hex_valor(ch: cadena) -> entero:
+    si ch >= "0" y ch <= "9":
+        retornar entero(ch)
+    si ch == "a" o ch == "A":
+        retornar 10
+    si ch == "b" o ch == "B":
+        retornar 11
+    si ch == "c" o ch == "C":
+        retornar 12
+    si ch == "d" o ch == "D":
+        retornar 13
+    si ch == "e" o ch == "E":
+        retornar 14
+    si ch == "f" o ch == "F":
+        retornar 15
+    retornar -1
+
+# Verdadero si el carácter puede quedar tal cual en una URL.
+funcion url_es_seguro(ch: cadena) -> booleano:
+    si (ch >= "a" y ch <= "z") o (ch >= "A" y ch <= "Z"):
+        retornar verdadero
+    si ch >= "0" y ch <= "9":
+        retornar verdadero
+    si ch == "-" o ch == "_" o ch == "." o ch == "~":
+        retornar verdadero
+    # '/', '?', ':' y '@' son legales en una query; '&', '=', '+' y '#'
+    # son estructurales (separadores, espacio, fragmento): se escapan para
+    # que url_armar_consulta haga roundtrip correcto con cualquier valor.
+    si ch == "/" o ch == "?" o ch == ":" o ch == "@":
+        retornar verdadero
+    retornar falso
+
+funcion url_hex_digito(v: entero) -> cadena:
+    cadena d = "0123456789ABCDEF"
+    retornar d[v % 16]
+
+# Percent-encodea cada carácter no seguro como %XX.
+funcion url_codificar(s: cadena) -> cadena:
+    cadena r = ""
+    para ch en s:
+        si url_es_seguro(ch):
+            r = r + ch
+        demas:
+            entero c = url_ord(ch)
+            si c < 0:
+                # No-ASCII (UTF-8): se deja tal cual (ver cabecera).
+                r = r + ch
+            demas:
+                r = r + "%" + url_hex_digito(c / 16) + url_hex_digito(c)
+    retornar r
+
+# Decodifica %XX y '+' (espacio). '%XX' inválido se deja tal cual.
+funcion url_decodificar(s: cadena) -> cadena:
+    cadena r = ""
+    entero n = longitud(s)
+    entero i = 0
+    mientras i < n:
+        si s[i] == "+":
+            r = r + " "
+            i = i + 1
+        sino si s[i] == "%" y i + 2 < n:
+            entero hi = url_hex_valor(s[i + 1])
+            entero lo = url_hex_valor(s[i + 2])
+            si hi < 0 o lo < 0:
+                r = r + s[i]
+                i = i + 1
+            demas:
+                r = r + url_chr(hi * 16 + lo)
+                i = i + 3
+        demas:
+            r = r + s[i]
+            i = i + 1
+    retornar r
+
+# --- consulta (query string) -------------------------------------------
+
+# Parte 'a=1&b=2' en pares. Los valores repetidos quedan con la última
+# clave ganando (documentado: sin lista de valores para no complicar).
+funcion url_parsear_consulta(q: cadena) -> diccionario<cadena, cadena>:
+    diccionario<cadena, cadena> d = {}
+    entero n = longitud(q)
+    entero ini = 0
+    entero i = 0
+    mientras i <= n:
+        si i == n o q[i] == "&":
+            si i > ini:
+                entero igual = -1
+                entero k = ini
+                mientras k < i:
+                    si q[k] == "=":
+                        igual = k
+                        romper
+                    k = k + 1
+                si igual < 0:
+                    d[url_decodificar(url_q_sub(q, ini, i))] = ""
+                demas:
+                    d[url_decodificar(url_q_sub(q, ini, igual))] = url_decodificar(url_q_sub(q, igual + 1, i))
+            ini = i + 1
+        i = i + 1
+    retornar d
+
+funcion url_q_sub(s: cadena, ini: entero, fin: entero) -> cadena:
+    cadena r = ""
+    entero i = ini
+    mientras i < fin:
+        r = r + s[i]
+        i = i + 1
+    retornar r
+
+funcion url_q_clave_mayor(a: cadena, b: cadena) -> booleano:
+    retornar a > b
+
+# Arma el query string ordenando las claves (para que el resultado sea
+# determinista, a diferencia del orden del diccionario).
+funcion url_armar_consulta(d: diccionario<cadena, cadena>) -> cadena:
+    lista<cadena> ks = claves(d)
+    ks = url_q_ordenar(ks)
+    cadena r = ""
+    booleano primero = verdadero
+    para k en ks:
+        si primero:
+            primero = falso
+        demas:
+            r = r + "&"
+        r = r + url_codificar(k) + "=" + url_codificar(d[k])
+    retornar r
+
+# Ordenamiento por inserción de cadenas (ascendente).
+funcion url_q_ordenar(l: lista<cadena>) -> lista<cadena>:
+    lista<cadena> r = []
+    para x en l:
+        r = agregar(r, x)
+    entero n = longitud(r)
+    entero i = 1
+    mientras i < n:
+        cadena k = r[i]
+        entero j = i - 1
+        mientras j >= 0 y r[j] > k:
+            r[j + 1] = r[j]
+            j = j - 1
+        r[j + 1] = k
+        i = i + 1
+    retornar r

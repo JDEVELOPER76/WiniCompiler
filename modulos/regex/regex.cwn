@@ -1,0 +1,141 @@
+# =====================================================================
+# regex.cwn — expresiones regulares POSIX para Wini
+# ---------------------------------------------------------------------
+# Envoltorio en Wini de las funciones C declaradas como 'externa' (ver
+# "codigo C/regex.c", que trae arriba el comando para compilarlo).
+# Sintaxis EXTENDED de POSIX (como grep -E): a+, a*, a?, a{2,4},
+# (grupo), a|b, [clase], [^negada], ^ inicio, $ fin, . salvo salto.
+# Los grupos se cuentan desde 1 (el 0 es todo el match).
+#
+# Dos niveles (ambos documentados):
+# - Manual: compilar() una vez + reusar el id (para loops).
+# - One-shot: coincide()/extraer()/reemplazar() que compilan, usan y
+#   liberan en una sola llamada (cómodas, pagan compilación cada vez).
+#
+# Convención general: los argumentos cadena se CONSUMEN al llamar; desde
+# Wini no hay que hacer nada especial. Los patrones/textos con NUL
+# embebido se cortan ahí (la API C trabaja con NUL-terminado).
+# =====================================================================
+
+# --- Externas (implementadas en C) ---
+# Cada una consume sus argumentos cadena. Ver "codigo C/regex.c" para
+# el detalle de cada contrato (ahí está la documentación completa).
+
+# Compila el patrón. Devuelve id (>= 0) o -1 si no compiló (ver error()).
+externa "regex_compilarx" como compilar(patron: cadena): entero
+# Libera el id. Falso si ya estaba liberado o era inválido.
+externa "regex_liberarx" como liberar_patron(id: entero): booleano
+# Texto del último error de compilación. "" si no hubo.
+externa "regex_ultimo_errorx" como error(): cadena
+# Verdadero si el patrón aparece en alguna parte del texto.
+externa "regex_coincidex" como coincide_en(id: entero, texto: cadena): booleano
+# Verdadero si el patrón coincide con TODO el texto (match completo, ^...$).
+externa "regex_match_completox" como coincide_completo_en(id: entero, texto: cadena): booleano
+# El trozo que matcheó (grupo 0) o "" si no hay match.
+externa "regex_extraerx" como extraer_en(id: entero, texto: cadena): cadena
+# Grupos 0..9 como lista<cadena> nueva (los que no participaron vienen
+# como ""). Lista vacía si no hay match.
+externa "regex_capturasx" como capturas_en(id: entero, texto: cadena): lista<cadena>
+# Reemplaza el PRIMER match: \1..\9 es el grupo N (vacío si no participó
+# o está fuera de rango), \\ es barra literal. Sin match devuelve copia
+# del texto.
+externa "regex_reemplazarx" como reemplazar_en(id: entero, texto: cadena, reemplazo: cadena): cadena
+# Reemplaza TODOS los matches no vacíos (los vacíos se saltean).
+externa "regex_reemplazar_todox" como reemplazar_todo_en(id: entero, texto: cadena, reemplazo: cadena): cadena
+# Parte por cada match no vacío (trozos vacíos omitidos). Lista NUEVA.
+externa "regex_dividirx" como dividir_en(id: entero, texto: cadena): lista<cadena>
+# Cuenta los matches no vacíos.
+externa "regex_contarx" como contar_en(id: entero, texto: cadena): entero
+# Escapa un literal para incrustarlo en un patrón.
+externa "regex_escaparx" como escapar_texto(texto: cadena): cadena
+# Versión del módulo (hoy "__2.wini()").
+externa "include__version_regex" como modulo_v_regex(): cadena
+
+
+# --- One-shot (compilan, usan y liberan) ---
+# Para un uso aislado. En un loop, compilar() una vez afuera rinde más.
+
+# Verdadero si 'patron' aparece en 'texto'. Falso si no compila.
+funcion coincide(patron: cadena, texto: cadena) -> booleano:
+    entero id = compilar(patron)
+    si id < 0:
+        retornar falso
+    booleano r = coincide_en(id, texto)
+    liberar_patron(id)
+    retornar r
+
+# El trozo que matcheó o "" (también "" si no compila o no hay match).
+funcion extraer(patron: cadena, texto: cadena) -> cadena:
+    entero id = compilar(patron)
+    si id < 0:
+        cadena v = ""
+        retornar v
+    cadena r = extraer_en(id, texto)
+    liberar_patron(id)
+    retornar r
+
+# Grupos 0..9 (los ausentes como ""). Lista vacía si no compila o no hay match.
+funcion capturas(patron: cadena, texto: cadena) -> lista<cadena>:
+    entero id = compilar(patron)
+    si id < 0:
+        lista<cadena> v = []
+        retornar v
+    lista<cadena> r = capturas_en(id, texto)
+    liberar_patron(id)
+    retornar r
+
+# Reemplaza el primer match (\1..\9, \\ literal). Sin match (o sin
+# compilar), copia del texto.
+funcion reemplazar(patron: cadena, texto: cadena, reemplazo: cadena) -> cadena:
+    entero id = compilar(patron)
+    si id < 0:
+        retornar texto
+    cadena r = reemplazar_en(id, texto, reemplazo)
+    liberar_patron(id)
+    retornar r
+
+# Reemplaza TODOS los matches no vacíos (los vacíos se saltean, nunca
+# cuelga). Sin match (o sin compilar), copia del texto.
+funcion reemplazar_todo(patron: cadena, texto: cadena, reemplazo: cadena) -> cadena:
+    entero id = compilar(patron)
+    si id < 0:
+        retornar texto
+    cadena r = reemplazar_todo_en(id, texto, reemplazo)
+    liberar_patron(id)
+    retornar r
+
+# Parte el texto por cada match no vacío; los trozos vacíos se omiten
+# (igual que cadena2lista()). Lista vacía si no compila.
+funcion dividir_texto(patron: cadena, texto: cadena) -> lista<cadena>:
+    entero id = compilar(patron)
+    si id < 0:
+        lista<cadena> v = []
+        retornar v
+    lista<cadena> r = dividir_en(id, texto)
+    liberar_patron(id)
+    retornar r
+
+# Cuenta los matches no vacíos. 0 si no compila.
+funcion contar(patron: cadena, texto: cadena) -> entero:
+    entero id = compilar(patron)
+    si id < 0:
+        retornar 0
+    entero r = contar_en(id, texto)
+    liberar_patron(id)
+    retornar r
+
+# Escapa un literal para incrustarlo en un patrón ("a.c" matchea "a.c"
+# literal, no "aXc"). Útil para armar patrones con entrada del usuario.
+funcion escapar(texto: cadena) -> cadena:
+    cadena r = escapar_texto(texto)
+    retornar r
+
+# Verdadero si 'patron' coincide con TODO 'texto' (match completo).
+# Falso si no compila o no hay match completo.
+funcion coincide_completo(patron: cadena, texto: cadena) -> booleano:
+    entero id = compilar(patron)
+    si id < 0:
+        retornar falso
+    booleano r = coincide_completo_en(id, texto)
+    liberar_patron(id)
+    retornar r

@@ -1,0 +1,153 @@
+# =====================================================================
+# escape.cwn — escape / unescape de texto y atributos XML (Wini puro)
+# ---------------------------------------------------------------------
+# Entidades con nombre: &amp; &lt; &gt; &quot; &apos;
+# Numéricas: &#65; (decimal) y &#x41; / &#X41; (hex). Solo se resuelven
+# los imprimibles ASCII 32-126 vía tabla (igual que wjson); fuera de
+# ese rango dan "?" (raros en la práctica con este compilador).
+#
+#   xml_escapar_texto(s)    : &, <, >  (para contenido de elemento)
+#   xml_escapar_atributo(s) : &, <, >, ", ' (para valores entre comillas)
+#   xml_desescapar(s)       : revierte las 5 + numéricas; lo desconocido
+#                             (&foo;) se deja tal cual.
+#
+# Sin imports. Solo builtins (longitud, para, etc.).
+# =====================================================================
+
+funcion xml_escapar_texto(s: cadena) -> cadena:
+    cadena r = ""
+    para ch en s:
+        si ch == "&":
+            r = r + "&amp;"
+        sino si ch == "<":
+            r = r + "&lt;"
+        sino si ch == ">":
+            r = r + "&gt;"
+        demas:
+            r = r + ch
+    retornar r
+
+funcion xml_escapar_atributo(s: cadena) -> cadena:
+    cadena r = ""
+    para ch en s:
+        si ch == "&":
+            r = r + "&amp;"
+        sino si ch == "<":
+            r = r + "&lt;"
+        sino si ch == ">":
+            r = r + "&gt;"
+        sino si ch == "\"":
+            r = r + "&quot;"
+        sino si ch == "'":
+            r = r + "&apos;"
+        demas:
+            r = r + ch
+    retornar r
+
+# Dígito hexadecimal -> valor 0-15, o -1 si no es hex.
+funcion xml_hex_valor(ch: cadena) -> entero:
+    si ch >= "0" y ch <= "9":
+        retornar entero(ch)
+    si ch == "a" o ch == "A":
+        retornar 10
+    si ch == "b" o ch == "B":
+        retornar 11
+    si ch == "c" o ch == "C":
+        retornar 12
+    si ch == "d" o ch == "D":
+        retornar 13
+    si ch == "e" o ch == "E":
+        retornar 14
+    si ch == "f" o ch == "F":
+        retornar 15
+    retornar -1
+
+# Tabla de imprimibles ASCII 32-126 para &#...; / &#x...;.
+funcion xml_chr_imprimible(code: entero) -> cadena:
+    cadena t = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+    si code < 32 o code > 126:
+        retornar "?"
+    retornar t[code - 32]
+
+funcion xml_esc_cortar(s: cadena, inicio: entero, fin: entero) -> cadena:
+    cadena r = ""
+    entero i = inicio
+    mientras i < fin:
+        r = r + s[i]
+        i = i + 1
+    retornar r
+
+# Desescapa un texto o valor de atributo (sin comillas externas).
+funcion xml_desescapar(s: cadena) -> cadena:
+    cadena r = ""
+    entero n = longitud(s)
+    entero i = 0
+    mientras i < n:
+        si s[i] != "&":
+            r = r + s[i]
+            i = i + 1
+        demas:
+            entero j = i + 1
+            mientras j < n y j < i + 10:
+                si s[j] == ";":
+                    romper
+                j = j + 1
+            si j >= n o s[j] != ";":
+                r = r + "&"
+                i = i + 1
+            demas:
+                cadena cuerpo = xml_esc_cortar(s, i + 1, j)
+                si cuerpo == "amp":
+                    r = r + "&"
+                    i = j + 1
+                sino si cuerpo == "lt":
+                    r = r + "<"
+                    i = j + 1
+                sino si cuerpo == "gt":
+                    r = r + ">"
+                    i = j + 1
+                sino si cuerpo == "quot":
+                    r = r + "\""
+                    i = j + 1
+                sino si cuerpo == "apos":
+                    r = r + "'"
+                    i = j + 1
+                sino si longitud(cuerpo) > 1 y cuerpo[0] == "#":
+                    entero code = xml_esc_parse_num(cuerpo)
+                    si code < 0:
+                        r = r + xml_esc_cortar(s, i, j + 1)
+                        i = j + 1
+                    demas:
+                        r = r + xml_chr_imprimible(code)
+                        i = j + 1
+                demas:
+                    r = r + xml_esc_cortar(s, i, j + 1)
+                    i = j + 1
+    retornar r
+
+# Parsea el cuerpo de una entidad numérica ("#65", "#x41", "#X41").
+# Devuelve el código o -1 si no es válida.
+funcion xml_esc_parse_num(cuerpo: cadena) -> entero:
+    entero n = longitud(cuerpo)
+    si n < 2:
+        retornar -1
+    si cuerpo[1] == "x" o cuerpo[1] == "X":
+        si n < 3:
+            retornar -1
+        entero code = 0
+        entero k = 2
+        mientras k < n:
+            entero d = xml_hex_valor(cuerpo[k])
+            si d < 0:
+                retornar -1
+            code = code * 16 + d
+            k = k + 1
+        retornar code
+    entero code2 = 0
+    entero k2 = 1
+    mientras k2 < n:
+        si cuerpo[k2] < "0" o cuerpo[k2] > "9":
+            retornar -1
+        code2 = code2 * 10 + entero(cuerpo[k2])
+        k2 = k2 + 1
+    retornar code2

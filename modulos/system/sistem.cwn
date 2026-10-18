@@ -1,0 +1,320 @@
+# =====================================================================
+# sistem.cwn — sistema operativo y archivos para Wini
+# ---------------------------------------------------------------------
+# Envoltorio en Wini de las funciones C declaradas como 'externa' (ver
+# "codigo C/sistema.c"): cada funcion de acá es una pasada directa a su
+# contraparte C, con nombres cortos históricos (c_/e_/r_/cop_/m_/aga_).
+# Se mantienen por compatibilidad; la documentación de cada una aclara
+# qué hace, qué devuelve ante errores y quién libera qué.
+#
+# Convención general (igual que el puente C):
+# - Los argumentos cadena se CONSUMEN al llamar (valga de variable o de
+#   literal): si la variable se sigue usando después, el llamador ya la
+#   retuvo por dentro del mecanismo de llamada; desde Wini no hay que
+#   hacer nada especial.
+# - Los errores devuelven falso / "" / -1 en vez de lanzar. Para
+#   distinguir "vacío" de "error" al leer, usar existe_archivo() antes.
+# - Las rutas son relativas a la carpeta de trabajo salvo que sean
+#   absolutas (ver dir_actual()).
+# =====================================================================
+
+importar "libstd/texto" como t
+
+# --- Externas (implementadas en C) ---
+# Cada una consume sus argumentos cadena. Ver "codigo C/sistema.c" para
+# el detalle de cada contrato (ahí está la documentación completa).
+
+# Ejecuta un comando en el shell. 'salida' verdadero lo muestra por
+# stdout y devuelve el código de salida; falso lo silencia. -1 ante
+# error propio. Ver ejecutar() en sistema.c.
+externa "ejecutar"   como ejecutar(cmd: cadena, salida: booleano): entero
+# 1=Windows, 2=MacOS, 3=Linux, 4=otro Unix, 0=desconocido.
+externa "plataforma" como plataforma(): entero
+# Verdadero si la ruta existe (archivo o carpeta).
+externa "existe"        como existe(ruta: cadena): booleano
+# Verdadero si la ruta existe y es carpeta.
+externa "es_directorio" como es_directorio(ruta: cadena): booleano
+# Crea el archivo vacío (o lo trunca si existía).
+externa "crear_archivox"     como crear_archivo(ruta: cadena): booleano
+# Borra el archivo. Falso si no existía.
+externa "eliminar_archivox"  como eliminar_archivo(ruta: cadena): booleano
+# Renombra dentro del mismo sistema de archivos.
+externa "renombrar_archivox" como renombrar_archivo(vieja: cadena, nueva: cadena): booleano
+# Copia binaria (8 KiB por pasada).
+externa "copiar_archivox"    como copiar_archivo(origen: cadena, destino: cadena): booleano
+# Mueve (rename, o copia+borra si cruza dispositivos).
+externa "mover_archivox"     como mover_archivo(origen: cadena, destino: cadena): booleano
+# Tamaño en bytes, o -1 si no existe o no es archivo regular.
+externa "peso_archivox"      como _peso_archivo(ruta: cadena): entero
+# Lee el archivo COMPLETO a memoria. "" ante cualquier error (ver nota
+# general: usar existe_archivo() antes si hay que distinguir).
+externa "leer_archivox"      como leer_archivo(ruta: cadena): cadena
+# Agrega el contenido AL FINAL (crea si no existe). Ver aga_archivo().
+externa "agregar_a_archivox" como agregar_a_archivo(ruta: cadena, contenido: cadena): booleano
+# Sobrescribe el archivo con el contenido (trunca o crea). Ver esc_archivo().
+externa "escribir_archivox" como escribir_archivo(ruta: cadena, contenido: cadena): booleano
+# Carpeta de trabajo actual. "" si falla.
+externa "ruta_actualx"         como ruta_actual(): cadena
+# Crea UN nivel de carpeta (el padre debe existir). Falso si ya existía.
+externa "crear_directoriox"    como crear_directorio(ruta: cadena): booleano
+# Borra una carpeta VACÍA.
+externa "eliminar_directoriox" como eliminar_directorio(ruta: cadena): booleano
+# Cambia la carpeta de trabajo del proceso (afecta rutas relativas).
+externa "cambiar_carpetax"     como cambiar_carpeta(ruta: cadena): booleano
+# Nombres sin "." ni "..", en orden NO garantizado (el del sistema).
+# Lista vacía si no se pudo abrir/leer.
+externa "listar_archivosx"     como listar_archivos(ruta: cadena): lista<cadena>
+# "x86_64", "x86", "arm64", "arm" o "desconocida".
+externa "arquitecturax"   como _arquitectura(): cadena
+# Versión del módulo (hoy "__2.wini()").
+externa "include__version" como include__version(): cadena
+# Imprime el texto tal cual (más '\n' final si 'salto'). Ver imprimir().
+externa "imprimirx" como imprimir_crudo(texto: cadena, salto: booleano): entero
+
+# --- Entorno (variables de entorno del proceso) ---
+# Valor de la variable de entorno 'nombre'. "" si no existe.
+externa "entornox"        como entorno(nombre: cadena): cadena
+# Define/sobrescribe 'nombre' = 'valor'. Devuelve verdadero si se pudo.
+externa "definir_entornox" como definir_entorno(nombre: cadena, valor: cadena): booleano
+# Elimina la variable de entorno 'nombre'. Devuelve verdadero si se hizo.
+externa "quitar_entornox" como quitar_entorno(nombre: cadena): booleano
+# Directorio home del usuario. "" si no se pudo.
+externa "directorio_homex" como directorio_home(): cadena
+# --- Directorios recursivos y rutas ---
+# Crea todos los directorios intermedios necesarios (mkdir -p).
+externa "crear_directorios_recursivosx" como crear_rutas(ruta: cadena): booleano
+# Elimina un directorio y todo su contenido (rm -rf).
+externa "eliminar_arbolx" como eliminar_ruta(ruta: cadena): booleano
+# Directorio temporal del sistema.
+externa "temp_dirx" como dir_temp(): cadena
+# Separador de ruta: "/" en Unix, "\\" en Windows.
+externa "separador_rutax" como sep_ruta(): cadena
+# Fecha de última modificación de un archivo o directorio.
+externa "fecha_modificacionx" como fecha_mod(ruta: cadena): cadena
+
+
+# --- Envoltorios con nombre propio ---
+# Pasadas directas 1:1 a las externas de arriba (misma semántica, mismos
+# errores). Existen para dar nombres estables en español al módulo.
+
+# Nombre del sistema: "Windows", "MacOS", "Linux", "Unix" o "Desconocido".
+funcion sistema()->cadena:
+	int p = plataforma()
+	si p == 1 :
+		retornar "Windows"
+	si p == 2 :
+		retornar "MacOS"
+	si p == 3 :
+		retornar "Linux"
+	si p == 4 :
+		retornar "Unix"
+	retornar "Desconocido"
+
+# Ejecuta 'comando' en el shell. 'salida' verdadero lo muestra y devuelve
+# el código de salida; falso lo silencia. -1 ante error propio.
+funcion cmd(comando: cadena, salida:booleano) -> entero:
+	retornar ejecutar(comando, salida)
+
+
+# Verdadero si 'ruta' existe (archivo o carpeta).
+funcion existe_archivo(ruta: cadena) -> booleano:
+	retornar existe(ruta)
+
+
+# Verdadero si 'ruta' existe y es carpeta.
+funcion es_dir(ruta: cadena) -> booleano:
+    retornar es_directorio(ruta)
+
+
+# Crea el archivo vacío (o lo trunca si ya existía). Falso si no se pudo
+# crear (permiso o carpeta inexistente: no crea carpetas padre).
+funcion c_archivo(ruta: cadena) -> booleano:
+	retornar crear_archivo(ruta)
+
+
+# Borra el archivo. Falso si no existía o no se pudo borrar.
+funcion e_archivo(ruta: cadena) -> booleano:
+	retornar eliminar_archivo(ruta)
+
+
+# Renombra dentro del mismo sistema de archivos.
+funcion r_archivo(vieja: cadena, nueva: cadena) -> booleano:
+	retornar renombrar_archivo(vieja, nueva)
+
+# Copia binaria. OJO: si falla a mitad, el destino puede quedar parcial.
+funcion cop_archivo(origen: cadena, destino: cadena) -> booleano:
+	retornar copiar_archivo(origen, destino)
+
+# Mueve (o copia+borra si cruza de dispositivo).
+funcion m_archivo(origen: cadena, destino: cadena) -> booleano:
+	retornar mover_archivo(origen, destino)
+
+# Tamaño en bytes, o -1 si no existe o no es archivo regular.
+funcion peso_archivo(ruta: cadena) -> entero:
+	retornar _peso_archivo(ruta)
+
+# Lee el archivo COMPLETO a una cadena (binario seguro). "" ante
+# cualquier error: para distinguir "vacío" de "error", llamar antes a
+# existe_archivo(). Carga todo de una vez: no usar con archivos gigantes.
+funcion l_archivo(ruta: cadena) -> cadena:
+	retornar leer_archivo(ruta)
+
+# Agrega 'contenido' AL FINAL del archivo (lo crea si no existe).
+# Devuelve verdadero si se escribieron todos los bytes.
+funcion aga_archivo(ruta: cadena, contenido: cadena) -> booleano:
+	retornar agregar_a_archivo(ruta, contenido)
+
+# Sobrescribe el archivo con 'contenido' (trunca si existía, crea si no).
+# Es la primitiva para emitir archivos generados (p. ej. un .ll): no hace
+# falta borrar antes con e_archivo(). Devuelve verdadero si se escribieron
+# todos los bytes; falso si no se pudo abrir/escribir.
+funcion esc_archivo(ruta: cadena, contenido: cadena) -> booleano:
+	retornar escribir_archivo(ruta, contenido)
+
+# Carpeta de trabajo actual. "" si falla.
+funcion dir_actual() -> cadena:
+	retornar ruta_actual()
+
+# Crea UN nivel de carpeta (el padre debe existir). Falso si ya existía.
+funcion c_carpeta(ruta: cadena) -> booleano:
+	retornar crear_directorio(ruta)
+
+# Borra una carpeta VACÍA. Falso si no está vacía.
+funcion e_carpeta(ruta: cadena) -> booleano:
+	retornar eliminar_directorio(ruta)
+
+# Cambia la carpeta de trabajo del proceso (afecta rutas relativas).
+funcion cb_carpeta(ruta: cadena) -> booleano:
+	retornar cambiar_carpeta(ruta)
+
+# Nombres sin "." ni "..", en orden NO garantizado (ordenar en Wini si
+# importa). Lista vacía si no se pudo abrir/leer.
+funcion list_archivos(ruta: cadena) -> lista<cadena>:
+	retornar listar_archivos(ruta)
+
+# "x86_64", "x86", "arm64", "arm" o "desconocida".
+funcion arquitectura() -> cadena:
+	retornar _arquitectura()
+
+
+# Versión del módulo (hoy "__2.wini()").
+funcion modulo_v()-> cadena:
+	retornar include__version()
+
+# Imprime 'texto' tal cual por stdout. 'salto' agrega '\n' final y viene
+# predeterminado en verdadero: imprimir("hola") salta de línea, igual que
+# escribir pero sin formatear nada (el texto ya viene armado, típicamente
+# con c"..."). Devuelve los bytes escritos o -1 si falló la escritura.
+# Ejemplos:
+#   imprimir("hola")            # "hola\n", como escribir("hola")
+#   imprimir("x: ", falso)      # sin salto (para seguir en la línea)
+#   imprimir(c"n={n}", falso)
+funcion imprimir(texto: cadena, salto: booleano = verdadero) -> entero:
+	retornar imprimir_crudo(texto, salto)
+
+#limpia la consola usando comandos de shell
+funcion limpiar_consola() -> entero:
+	si sistema() == "Windows":
+		retornar cmd("cls", verdadero)
+	sino:
+		retornar cmd("clear", verdadero)
+
+# --- Entorno: envoltorios con nombre propio ---
+
+# Valor de la variable de entorno 'nombre'. "" si no existe.
+funcion env(nombre: cadena) -> cadena:
+    retornar entorno(nombre)
+
+# Define/sobrescribe la variable de entorno 'nombre' = 'valor'.
+funcion set_env(nombre: cadena, valor: cadena) -> booleano:
+    retornar definir_entorno(nombre, valor)
+
+# Elimina la variable de entorno 'nombre'.
+funcion unset_env(nombre: cadena) -> booleano:
+    retornar quitar_entorno(nombre)
+
+# Directorio home del usuario. "" si no se pudo.
+funcion home_dir() -> cadena:
+    retornar directorio_home()
+
+# --- Directorios recursivos y rutas: envoltorios con nombre propio ---
+
+# Directorio temporal del sistema.
+# Usar directamente: sys.dir_temp()
+# Separador de ruta: usar directamente: sys.sep_ruta()
+# Fecha de modificación: usar directamente: sys.fecha_mod(ruta)
+
+# Busca archivos en un directorio que contengan un patrón en su nombre.
+# Retorna lista de rutas completas.
+funcion buscar_archivos(directorio: cadena, patron: cadena) -> lista<cadena>:
+    lista<cadena> nombres = list_archivos(directorio)
+    lista<cadena> resultado = []
+    para n en nombres:
+        si t.contiene(n, patron):
+            resultado = agregar(resultado, directorio + sep_ruta() + n)
+    retornar resultado
+
+# Formatea una cantidad de bytes a tamaño legible (B, KB, MB, GB, TB).
+funcion tam_legible(bytes: entero) -> cadena:
+    si bytes < 1024:
+        retornar c"{bytes} B"
+    si bytes < 1024 * 1024:
+        retornar c"{bytes / 1024} KB"
+    si bytes < 1024 * 1024 * 1024:
+        retornar c"{bytes / (1024 * 1024)} MB"
+    retornar c"{bytes / (1024 * 1024 * 1024)} GB"
+
+# Tamaño del archivo en bytes. -1 si no existe o no se puede leer.
+funcion tam_archivo(ruta: cadena) -> entero:
+    retornar peso_archivo(ruta)
+
+# Verdadero si la ruta existe y es carpeta.
+funcion existe_directorio(ruta: cadena) -> booleano:
+    retornar es_dir(ruta)
+
+# Solo el nombre del archivo de una ruta ("docs/a.txt" -> "a.txt").
+funcion nombre_archivo(ruta: cadena) -> cadena:
+    entero sep = -1
+    entero i = 0
+    entero n = longitud(ruta)
+    mientras i < n:
+        si ruta[i] == sep_ruta() o ruta[i] == "/" o ruta[i] == "\\":
+            sep = i
+        i = i + 1
+    si sep < 0:
+        retornar ruta
+    retornar t.subcadena(ruta, sep + 1, n)
+
+# Solo la extensión sin el punto ("a.txt" -> "txt", "a.tar.gz" -> "gz").
+funcion extension_archivo(ruta: cadena) -> cadena:
+    cadena nom = nombre_archivo(ruta)
+    entero i = longitud(nom) - 1
+    mientras i >= 0:
+        si nom[i] == ".":
+            retornar t.subcadena(nom, i + 1, longitud(nom))
+        i = i - 1
+    retornar ""
+
+# Directorio padre de una ruta ("docs/a.txt" -> "docs", "a.txt" -> "").
+funcion dir_padre(ruta: cadena) -> cadena:
+    entero sep = -1
+    entero i = 0
+    entero n = longitud(ruta)
+    mientras i < n:
+        si ruta[i] == sep_ruta() o ruta[i] == "/" o ruta[i] == "\\":
+            sep = i
+        i = i + 1
+    si sep <= 0:
+        retornar ""
+    retornar t.subcadena(ruta, 0, sep)
+
+# Une dos rutas usando el separador correcto del SO.
+funcion unir_rutas(ruta1: cadena, ruta2: cadena) -> cadena:
+    si t.es_vacia(ruta1):
+        retornar ruta2
+    si t.es_vacia(ruta2):
+        retornar ruta1
+    cadena sep = sep_ruta()
+    si t.termina_en(ruta1, sep) o t.termina_en(ruta1, "/") o t.termina_en(ruta1, "\\"):
+        retornar ruta1 + ruta2
+    retornar ruta1 + sep + ruta2

@@ -1,0 +1,86 @@
+# =====================================================================
+# tiempo.cwn — hora, fecha y medición de intervalos para Wini
+# ---------------------------------------------------------------------
+# Envoltorio en Wini de las funciones C declaradas como 'externa' (ver
+# "codigo C/tiempo.c", que trae arriba el comando para compilarlo). Cada
+# funcion de acá es una pasada directa a su contraparte C, más tres
+# formatos listos escritos en Wini puro (fecha, hora, fecha_hora).
+#
+# Convención general (igual que system/sistem.cwn):
+# - Los argumentos cadena se CONSUMEN al llamar; desde Wini no hay que
+#   hacer nada especial.
+# - Todo es hora LOCAL del sistema, salvo marca_ms() que es monotonía
+#   pura (solo sirve para restar y medir duraciones).
+# =====================================================================
+
+# --- Externas (implementadas en C) ---
+# Cada una consume sus argumentos cadena. Ver "codigo C/tiempo.c" para
+# el detalle de cada contrato (ahí está la documentación completa).
+
+# Segundos Unix (época 1970-01-01 UTC). Sirve para sellos y para comparar
+# instantes lejanos; para medir duraciones cortas preferir marca_ms().
+externa "tiempo_unix" como tiempo_unix(): entero
+# Milisegundos monótonos (no es hora: solo vale para restar). Patrón:
+#   entero ini = marca_ms()
+#   ... trabajo ...
+#   entero ms = marca_ms() - ini
+externa "marca_ms" como marca_ms(): entero
+# Duerme 'seg' segundos (fracción incluida, 0.5 = medio segundo).
+# Negativo: -1 sin dormir. Devuelve 0 si durmió completo.
+externa "dormirx" como dormir(seg: decimal): entero
+# Año completo (2026). 0 si falló el reloj (casi imposible).
+externa "anio_actual" como anio(): entero
+# Mes 1-12.
+externa "mes_actual" como mes(): entero
+# Día del mes 1-31.
+externa "dia_actual" como dia(): entero
+# Hora 0-23.
+externa "hora_actual" como hora(): entero
+# Minuto 0-59.
+externa "minuto_actual" como minuto(): entero
+# Segundo 0-59 (60 solo en segundos intercalares).
+externa "segundo_actual" como segundo(): entero
+# Día de la semana 0-6 (0 = domingo).
+externa "dia_semana_actual" como dia_semana(): entero
+# strftime() con el formato dado (p. ej. "%Y-%m-%d %H:%M:%S"). "" si el
+# formato no produjo nada o falló.
+externa "formato_horax" como formato_hora(fmt: cadena): cadena
+# Versión del módulo (hoy "__1.wini()").
+externa "include__version_tiempo" como modulo_v_tiempo(): cadena
+
+
+# --- Envoltorios con nombre propio ---
+# Pasadas directas 1:1 a las externas de arriba (misma semántica).
+
+# Segundos Unix. Ver tiempo_unix().
+funcion tiempo() -> entero:
+    retornar tiempo_unix()
+
+# Milisegundos monótonos para medir duraciones (restar, no hora).
+# Ver marca_ms().
+funcion marca() -> entero:
+    retornar marca_ms()
+
+# Duerme 'seg' segundos (fracción incluida). 0 si durmió, -1 si 'seg'
+# era negativo. Ver dormir().
+funcion dormir_seg(seg: decimal) -> entero:
+    retornar dormir(seg)
+
+
+# --- Formatos listos (Wini puro) ---
+# Atajos sobre formato_hora() para lo más pedido.
+
+# "2026-10-13".
+funcion fecha() -> cadena:
+    cadena r = formato_hora("%Y-%m-%d")
+    retornar r
+
+# "21:34:07".
+funcion hora_texto() -> cadena:
+    cadena r = formato_hora("%H:%M:%S")
+    retornar r
+
+# "2026-10-13 21:34:07".
+funcion fecha_hora() -> cadena:
+    cadena r = formato_hora("%Y-%m-%d %H:%M:%S")
+    retornar r

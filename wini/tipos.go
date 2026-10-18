@@ -29,7 +29,9 @@ func (t *TipoEstructura) Igual(otro Tipo) bool {
 
 func (t *TipoEstructura) Campo(nombre string) (Tipo, int, bool) {
 	for i, c := range t.Campos {
-		if c.Nombre == nombre { return c.Tipo, i, true }
+		if c.Nombre == nombre {
+			return c.Tipo, i, true
+		}
 	}
 	return nil, -1, false
 }
@@ -54,6 +56,24 @@ var tiposPrimitivos = map[string]*TipoPrimitivo{
 	"booleano": TipoBooleano,
 	"cadena":   TipoCadena,
 	"vacio":    TipoVacio,
+}
+
+// TipoSinValor representa la ausencia de valor de una expresión: es lo que
+// devuelven las llamadas que solo efectos secundarios ('escribir(...)' y
+// 'liberar(...)'). Antes estas devolvían 'nil' (la interfaz Tipo vacía), y
+// cualquier consumidor que hiciera real.Igual(...) sobre ese nil —como
+// 'exigir' al validar la condición de un 'si' o de un 'mientras', o la
+// comparación contra el tipo declarado de una asignación— entraba en
+// nil-pointer dereference y el compilador moría con un panic interno de Go
+// en vez de reportar un error. Con este sentinel, el nil-deref desaparece
+// y los usos indebidos dan un mensaje de tipo claro.
+var TipoSinValor = &TipoPrimitivo{"sin_valor"}
+
+// EsTipoSinValor reporta si 't' es el sentinel de "esta expresión no
+// produce valor" (llamadas como 'escribir'/'liberar').
+func EsTipoSinValor(t Tipo) bool {
+	p, ok := t.(*TipoPrimitivo)
+	return ok && p.nombre == "sin_valor"
 }
 
 func EsPrimitivo(nombre string) bool {
@@ -109,6 +129,14 @@ func ClaveDiccionarioValida(t Tipo) bool {
 type TipoFuncion struct {
 	Parametros []Tipo
 	Retorno    Tipo
+	// Nombres trae, para cada parámetro de Parametros, el nombre con el
+	// que fue declarado ('funcion f(a: entero, b: entero = 0)' ->
+	// ["a", "b"]). Lo usan el verificador y el codegen para resolver
+	// argumentos nombrados en las llamadas ('f(b = 1, a = 2)'). Puede
+	// estar vacío si la firma se construyó sin nodos de parámetro; no
+	// participa de Igual(): dos firmas son del mismo tipo por cantidad y
+	// tipos de parámetros, no por cómo se llamen.
+	Nombres []string
 	// Requeridos es la cantidad de parámetros obligatorios (sin valor por
 	// defecto). Los parámetros desde el índice Requeridos en adelante
 	// tienen valor por defecto y son opcionales en llamadas posicionales
@@ -132,10 +160,25 @@ func NewTipoFuncion(parametros []Tipo, retorno Tipo, requeridos int) *TipoFuncio
 	return &TipoFuncion{Parametros: parametros, Retorno: retorno, Requeridos: requeridos}
 }
 
+// nombreAIndice devuelve el índice del parámetro con ese nombre, o -1 si
+// la firma no tiene ningún parámetro con ese nombre (o no guarda nombres).
+func (t *TipoFuncion) nombreAIndice(nombre string) int {
+	for i, n := range t.Nombres {
+		if n == nombre && i < len(t.Parametros) {
+			return i
+		}
+	}
+	return -1
+}
+
 func (t *TipoFuncion) String() string {
 	partes := make([]string, len(t.Parametros))
 	for i, p := range t.Parametros {
-		partes[i] = p.String()
+		nombre := ""
+		if i < len(t.Nombres) {
+			nombre = t.Nombres[i] + ":"
+		}
+		partes[i] = nombre + p.String()
 	}
 	if t.VariadicoC {
 		partes = append(partes, "...")

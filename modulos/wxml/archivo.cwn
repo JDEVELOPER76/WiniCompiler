@@ -1,0 +1,24 @@
+# =====================================================================
+# archivo.cwn — persistencia de texto XML en archivos (Wini puro + system)
+# ---------------------------------------------------------------------
+# IMPORTANTE: el programa principal debe importar "system/sistem" ANTES
+# que este módulo si también lo usa directo (mismo patrón que wjson).
+#
+# Este módulo solo mueve texto (ya codificado con xml_codificar o por
+# leer con xml_parse en el principal). No importa encode/decode para
+# seguir siendo independiente.
+# =====================================================================
+
+importar "system/sistem" como sys
+
+funcion xml_guardar_texto(ruta: cadena, texto: cadena) -> booleano:
+    retornar sys.esc_archivo(ruta, texto)
+
+funcion xml_cargar_texto(ruta: cadena) -> cadena:
+    retornar sys.l_archivo(ruta)
+
+funcion xml_existe(ruta: cadena) -> booleano:
+    retornar sys.existe_archivo(ruta)
+
+funcion xml_peso(ruta: cadena) -> entero:
+    retornar sys.peso_archivo(ruta)

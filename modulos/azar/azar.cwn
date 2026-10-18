@@ -1,0 +1,61 @@
+# =====================================================================
+# azar.cwn — generador pseudoaleatorio determinista (LCG)
+# ---------------------------------------------------------------------
+# Las funciones pesadas viven en C (ver "codigo C/azar.c", libazar.a).
+# Mismo algoritmo en todas las plataformas (LCG de 31 bits, MINSTD):
+# determinista y reproducible. NO sirve para criptografía.
+#
+# El estado viaja en una lista<entero> de un elemento que se MUTA:
+#
+#   importar "azar/azar" como az
+#   lista<entero> estado = az.semilla(42)
+#   entero a = az.rango(estado, 1, 6)      # 1..6, avanza estado
+#   decimal r = az.decimal(estado)         # 0.0 .. 1.0
+#   cadena c = az.elegir(estado, ["a","b","c"])
+#   lista<cadena> bar = az.barajar(estado, ["x","y","z"])
+#   cadena s = az.cadena(estado, 8)        # 8 chars alfanuméricos
+#
+# Los nombres originales (aza_*) se mantienen por compatibilidad y
+# llaman ahora a la implementación en C.
+# =====================================================================
+
+# --- Externas (implementadas en C, ver "codigo C/azar.c") ---
+
+externa "azar_semilla"   como semilla(inicial: entero): lista<entero>
+externa "azar_siguiente" como siguiente(estado: lista<entero>): lista<entero>
+externa "azar_rango"     como entre(estado: lista<entero>, minimo: entero, maximo: entero): entero
+externa "azar_decimal"   como dec(estado: lista<entero>): decimal
+externa "azar_booleano"  como boole(estado: lista<entero>): booleano
+externa "azar_elegir"    como elegir(estado: lista<entero>, l: lista<cadena>): cadena
+externa "azar_barajar"   como barajar(estado: lista<entero>, l: lista<cadena>): lista<cadena>
+externa "azar_cadena"    como cadena_azar(estado: lista<entero>, n: entero, alfabeto: cadena): cadena
+externa "azar_version"   como azar_version(): cadena
+
+# --- Nombres originales (compatibilidad) — llaman a la versión en C ---
+
+funcion aza_semilla(inicial: entero) -> lista<entero>:
+    retornar semilla(inicial)
+
+funcion aza_siguiente(estado: lista<entero>) -> entero:
+    lista<entero> e = siguiente(estado)
+    retornar e[0]
+
+funcion aza_rango(estado: lista<entero>, minimo: entero, maximo: entero) -> entero:
+    retornar entre(estado, minimo, maximo)
+
+funcion aza_decimal(estado: lista<entero>) -> decimal:
+    retornar dec(estado)
+
+funcion aza_booleano(estado: lista<entero>) -> booleano:
+    retornar boole(estado)
+
+funcion aza_elegir(estado: lista<entero>, l: lista<cadena>) -> cadena:
+    retornar elegir(estado, l)
+
+funcion aza_barajar(estado: lista<entero>, l: lista<cadena>) -> lista<cadena>:
+    retornar barajar(estado, l)
+
+funcion aza_cadena(estado: lista<entero>, n: entero, alfabeto: cadena) -> cadena:
+    retornar cadena_azar(estado, n, alfabeto)
+
+# Versión del módulo: usar azar_version()

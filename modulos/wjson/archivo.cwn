@@ -1,0 +1,28 @@
+# =====================================================================
+# archivo.cwn — persistencia de texto JSON en archivos (Wini puro + system)
+# ---------------------------------------------------------------------
+# IMPORTANTE (bug winic con imports transitivos): el programa principal
+# debe importar "system/sistem" ANTES que este módulo. Orden correcto
+# (rutas relativas al .wn que importa, ej. desde tests/ o ejemplos/):
+#
+#   importar "system/sistem" como sys
+#   importar "../includes/archivo" como archivo
+#
+# Este módulo solo mueve texto (ya codificado con json_codificar o por
+# leer con json_parse en el principal). No importa encode/decode para
+# seguir siendo independiente.
+# =====================================================================
+
+importar "system/sistem" como sys
+
+funcion json_guardar_texto(ruta: cadena, texto: cadena) -> booleano:
+    retornar sys.esc_archivo(ruta, texto)
+
+funcion json_cargar_texto(ruta: cadena) -> cadena:
+    retornar sys.l_archivo(ruta)
+
+funcion json_existe(ruta: cadena) -> booleano:
+    retornar sys.existe_archivo(ruta)
+
+funcion json_peso(ruta: cadena) -> entero:
+    retornar sys.peso_archivo(ruta)

@@ -1,0 +1,75 @@
+# =====================================================================
+# registro.cwn — logging simple a archivo (Wini puro, sobre system+tiempo)
+# ---------------------------------------------------------------------
+# Cada línea tiene pinta de:
+#   [2026-10-16 12:33:01] [INFO] mensaje acá
+#
+#   log_info("app.log", "arranque")
+#   log_error("app.log", "falló la conexión")
+#   log_a_archivo("app.log", "DEBUG", "detalle", "INFO")  # filtrado
+#
+# Los niveles y su rango (mayor = más severo): DEBUG 10, INFO 20,
+# ADVERTENCIA 30, ERROR 40. log_a_archivo solo escribe si el rango del
+# mensaje alcanza el mínimo pedido; nivel desconocido = INFO.
+# Las funciones devuelven falso si el sistema no pudo abrir/agregar el
+# archivo (no lanzan).
+# Importa system/sistem (escritura) y tiempo/tiempo (sello).
+# =====================================================================
+
+importar "system/sistem" como sys
+importar "tiempo/tiempo" como tic
+
+# Rango numérico de un nivel (texto en mayúsculas o minúsculas).
+funcion log_nivel_rango(nivel: cadena) -> entero:
+    cadena n = log_a_mayusculas(nivel)
+    si n == "DEBUG":
+        retornar 10
+    si n == "INFO":
+        retornar 20
+    si n == "ADVERTENCIA" o n == "WARNING":
+        retornar 30
+    si n == "ERROR":
+        retornar 40
+    retornar 20
+
+funcion log_a_mayusculas(s: cadena) -> cadena:
+    cadena r = ""
+    para ch en s:
+        si ch >= "a" y ch <= "z":
+            r = r + chr_mayuscula(ch)
+        demas:
+            r = r + ch
+    retornar r
+
+funcion chr_mayuscula(ch: cadena) -> cadena:
+    cadena minus = "abcdefghijklmnopqrstuvwxyz"
+    cadena mayus = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    entero i = 0
+    mientras i < 26:
+        si minus[i] == ch:
+            retornar mayus[i]
+        i = i + 1
+    retornar ch
+
+# Arma la línea completa (con salto de línea final).
+funcion log_linea(nivel: cadena, mensaje: cadena) -> cadena:
+    retornar c"[{tic.fecha_hora()}] [{nivel}] {mensaje}" + "\n"
+
+# Escribe si rango(nivel) >= rango(nivel_min). Devuelve el resultado de
+# la escritura.
+funcion log_a_archivo(ruta: cadena, nivel: cadena, mensaje: cadena, nivel_min: cadena) -> booleano:
+    si log_nivel_rango(nivel) < log_nivel_rango(nivel_min):
+        retornar verdadero
+    retornar sys.aga_archivo(ruta, log_linea(nivel, mensaje))
+
+funcion log_debug(ruta: cadena, mensaje: cadena) -> booleano:
+    retornar log_a_archivo(ruta, "DEBUG", mensaje, "DEBUG")
+
+funcion log_info(ruta: cadena, mensaje: cadena) -> booleano:
+    retornar log_a_archivo(ruta, "INFO", mensaje, "DEBUG")
+
+funcion log_advertencia(ruta: cadena, mensaje: cadena) -> booleano:
+    retornar log_a_archivo(ruta, "ADVERTENCIA", mensaje, "DEBUG")
+
+funcion log_error(ruta: cadena, mensaje: cadena) -> booleano:
+    retornar log_a_archivo(ruta, "ERROR", mensaje, "DEBUG")

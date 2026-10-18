@@ -1,0 +1,30 @@
+# =====================================================================
+# core.cwn — versión de wxml (Wini puro, sin imports, sin principal)
+# ---------------------------------------------------------------------
+# La librería son SOLO los archivos de esta carpeta (wxml/*.cwn), por
+# capas con imports reales (no amalgamado):
+#   tipos   : XmlNodo/XmlResultado + constructores (sin imports)
+#   escape  : escapar/desescapar (sin imports)
+#   encode  : codificar (importa escape; tipos vía quien lo use)
+#   decode  : parsear (importa escape; tipos vía quien lo use)
+#   archivo : texto <-> disco (importa system)
+#   wxml    : abrir/cargar/guardar/bonito/documento (importa tipos+encode+decode+archivo)
+#   core    : versión (sin imports)
+# Ninguno tiene 'principal'. El programa de terminal es main.wn.
+#
+# USO FÁCIL (una línea, tipos incluidos, sin definir nada):
+#   importar "wxml/wxml" como xml
+#   XmlResultado r = xml.xml_abrir("datos.xml")
+#   XmlResultado t = xml.xml_cargar("<a>x</a>")
+#   cadena b = xml.xml_bonito(r.valor, 2)
+#   xml.xml_guardar("salida.xml", r.valor)
+#   xml.xml_guardar_bonito("linda.xml", r.valor, 2)
+#
+# USO MODULAR (capa que necesites):
+#   importar "wxml/tipos" como tipos
+#   importar "wxml/encode" como enc
+#   importar "wxml/decode" como dec
+# =====================================================================
+
+funcion xml_version() -> cadena:
+    retornar "wxml 0.1.0 (capas+wxml)"

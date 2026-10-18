@@ -1,0 +1,90 @@
+# =====================================================================
+# pruebas.cwn — mini framework de pruebas (Wini puro)
+# ---------------------------------------------------------------------
+#   lista<entero> e = pru_crear()
+#   pru_igual_entero(e, "suma", 2 + 2, 4)
+#   pru_verdadero(e, "parse ok", r.ok)
+#   pru_igual(e, "salida", texto, "esperado")
+#   entero fallos = pru_reportar(e)   # imprime el resumen
+#
+# El estado es una lista<entero> de dos posiciones [pasados, fallidos]
+# que las funciones MUTAN en el lugar (las listas van por referencia;
+# los structs en Wini pasan por valor, por eso no se usa un struct).
+#
+# Cada pru_* imprime "OK <nombre>" o "FAIL <nombre>: ..." al momento y
+# suma al contador. pru_reportar devuelve la cantidad de fallidos (0 =
+# todo bien), para retornarla desde principal como código de salida.
+# pru_igual_decimal compara con tolerancia (diferencia <= tol).
+# Sin imports. Solo builtins.
+# =====================================================================
+
+# [pasados, fallidos]
+funcion pru_crear() -> lista<entero>:
+    lista<entero> e = []
+    e = agregar(e, 0)
+    e = agregar(e, 0)
+    retornar e
+
+funcion pru_pasar(e: lista<entero>) -> vacio:
+    e[0] = e[0] + 1
+
+funcion pru_fallar(e: lista<entero>, nombre: cadena, detalle: cadena) -> vacio:
+    e[1] = e[1] + 1
+    escribir(c"FAIL {nombre}: {detalle}")
+
+# Compara dos cadenas.
+funcion pru_igual(e: lista<entero>, nombre: cadena, obtenido: cadena, esperado: cadena) -> booleano:
+    si obtenido == esperado:
+        pru_pasar(e)
+        escribir(c"OK {nombre}")
+        retornar verdadero
+    pru_fallar(e, nombre, c"obtuve [{obtenido}] esperaba [{esperado}]")
+    retornar falso
+
+funcion pru_distinto(e: lista<entero>, nombre: cadena, obtenido: cadena, inesperado: cadena) -> booleano:
+    si obtenido != inesperado:
+        pru_pasar(e)
+        escribir(c"OK {nombre}")
+        retornar verdadero
+    pru_fallar(e, nombre, c"no debía ser [{inesperado}]")
+    retornar falso
+
+funcion pru_igual_entero(e: lista<entero>, nombre: cadena, obtenido: entero, esperado: entero) -> booleano:
+    si obtenido == esperado:
+        pru_pasar(e)
+        escribir(c"OK {nombre}")
+        retornar verdadero
+    pru_fallar(e, nombre, c"obtuve {obtenido} esperaba {esperado}")
+    retornar falso
+
+funcion pru_igual_decimal(e: lista<entero>, nombre: cadena, obtenido: decimal, esperado: decimal, tol: decimal) -> booleano:
+    decimal d = obtenido - esperado
+    si d < 0.0:
+        d = -d
+    si d <= tol:
+        pru_pasar(e)
+        escribir(c"OK {nombre}")
+        retornar verdadero
+    pru_fallar(e, nombre, c"obtuve {obtenido} esperaba {esperado} (tol {tol})")
+    retornar falso
+
+funcion pru_verdadero(e: lista<entero>, nombre: cadena, cond: booleano) -> booleano:
+    si cond:
+        pru_pasar(e)
+        escribir(c"OK {nombre}")
+        retornar verdadero
+    pru_fallar(e, nombre, "se esperaba verdadero")
+    retornar falso
+
+funcion pru_falso(e: lista<entero>, nombre: cadena, cond: booleano) -> booleano:
+    si no cond:
+        pru_pasar(e)
+        escribir(c"OK {nombre}")
+        retornar verdadero
+    pru_fallar(e, nombre, "se esperaba falso")
+    retornar falso
+
+# Imprime el resumen y devuelve la cantidad de fallidos.
+funcion pru_reportar(e: lista<entero>) -> entero:
+    escribir(c"PRUEBAS: {e[0]} pasadas, {e[1]} fallidas")
+    retornar e[1]

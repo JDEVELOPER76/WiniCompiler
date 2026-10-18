@@ -122,9 +122,13 @@ func (p *Parser) esperado(tipo TipoToken) string {
 	if token != nil {
 		linea = token.Linea
 	}
+	visto := "fin del archivo"
+	if token != nil {
+		visto = tokenDescripcion(token)
+	}
 	panic(&SintaxisError{
 		ErrorConLinea: ErrorConLinea{
-			Mensaje: fmt.Sprintf("Se esperaba %s, pero se encontró %v", tipo, token),
+			Mensaje: fmt.Sprintf("Se esperaba %s, pero se encontró %s", tipo, visto),
 			Linea:   &linea,
 		},
 	})
@@ -233,9 +237,13 @@ func (p *Parser) Parse() *Nodo {
 			if tok != nil {
 				linea = tok.Linea
 			}
+			visto := "fin del archivo"
+			if tok != nil {
+				visto = tokenDescripcion(tok)
+			}
 			panic(&SintaxisError{
 				ErrorConLinea: ErrorConLinea{
-					Mensaje: fmt.Sprintf("Sentencia inesperada o palabra reservada fuera de contexto: %v", tok),
+					Mensaje: fmt.Sprintf("Sentencia inesperada o palabra reservada fuera de contexto: %s", visto),
 					Linea:   &linea,
 				},
 			})
@@ -396,6 +404,21 @@ func (p *Parser) parsearSentencia(palabrasParada map[string]bool) *Nodo {
 	}
 	if token.Tipo == IDENTIFICADOR {
 		siguiente := p.tokenSiguientePeek()
+		// Asignación a campo de estructura: 'p.x = 5', 'p.x += 1',
+		// 'p.nombre = "texto"'. Solo un nivel (variable.campo); se
+		// detecta mirando el patrón IDENTIFICADOR '.' IDENTIFICADOR '='
+		// (o '+='/'-=') ANTES de tratar de parsear la línea como
+		// expresión, que no sabe qué hacer con una asignación.
+		if siguiente != nil && siguiente.Tipo == PUNTO &&
+			p.posicion+2 < len(p.tokens) && p.tokens[p.posicion+2].Tipo == IDENTIFICADOR &&
+			p.posicion+3 < len(p.tokens) {
+			tokenTrasCampo := p.tokens[p.posicion+3]
+			esIgual := tokenTrasCampo.Valor == "="
+			esCompuesto := tokenTrasCampo.Tipo == OPERADOR_ASIGNACION && (tokenTrasCampo.Valor == "+=" || tokenTrasCampo.Valor == "-=")
+			if esIgual || esCompuesto {
+				return p.parsearAsignacionCampo()
+			}
+		}
 		if siguiente != nil && siguiente.Tipo == CORCHETE && siguiente.Valor == "[" {
 			idxCierre := p.encontrarCorcheteCierre(p.posicion + 1)
 			if idxCierre+1 < len(p.tokens) {
@@ -434,7 +457,9 @@ func (p *Parser) parsearEstructura() *Nodo {
 	campos := []*Nodo{}
 	for p.tokenActual() != nil {
 		if p.tokenActual().Tipo == NUEVA_LINEA {
-			if indentacionDeToken(p.tokenActual()) < ind { break }
+			if indentacionDeToken(p.tokenActual()) < ind {
+				break
+			}
 			p.tokenSiguiente()
 			continue
 		}
@@ -454,6 +479,93 @@ func (p *Parser) parsearEstructura() *Nodo {
 	return NewNodo("ESTRUCTURA", nombre, linea).AgregarHijo(NewNodo("CAMPOS", nil, linea).AgregarHijo(campos...))
 }
 
+// tokenDescripcion devuelve una descripción legible de un token para
+// mensajes de error, en vez del struct Go crudo que salía antes
+// ("Factor inesperado: &{PUNTOS : 24 9}").
+func tokenDescripcion(tok *Token) string {
+	if tok == nil {
+		return "fin del archivo"
+	}
+	switch tok.Tipo {
+	case PUNTOS:
+		return "':'"
+	case PUNTO:
+		return "'.'"
+	case COMA:
+		return "','"
+	case PARENTESIS:
+		if tok.Valor == "(" {
+			return "'('"
+		}
+		return "')'"
+	case CORCHETE:
+		if tok.Valor == "[" {
+			return "'['"
+		}
+		return "']'"
+	case LLAVE:
+		if tok.Valor == "{" {
+			return "'{'"
+		}
+		return "'}'"
+	case COMPARADOR:
+		return fmt.Sprintf("'%s'", tok.Valor)
+	case OPERADOR_ASIGNACION, OPERADOR:
+		return fmt.Sprintf("'%s'", tok.Valor)
+	case PALABRA_CLAVE, OPERADOR_LOGICO, TIPO_DATO, NINGUNO, BOOLEANO:
+		return fmt.Sprintf("palabra reservada '%s'", tok.Valor)
+	case IDENTIFICADOR:
+		return fmt.Sprintf("identificador '%s'", tok.Valor)
+	case ENTERO, DECIMAL:
+		return fmt.Sprintf("número '%s'", tok.Valor)
+	case CADENA_TEXTO, CADENA_INTERPOLADA:
+		return "cadena de texto"
+	case NUEVA_LINEA:
+		return "fin de línea"
+	default:
+		return fmt.Sprintf("'%s'", tok.Valor)
+	}
+}
+
+// parsearAsignacionCampo parsea 'p.campo = expr' y 'p.campo += expr'
+// (un nivel de campo, sobre una variable de estructura). El nodo
+// ASIGNACION_CAMPO lleva: el identificador de la variable, el nombre del
+// campo, y la expresión del valor. La forma compuesta se desazucara a
+// una BINARIA cuyo lado izquierdo relee el campo
+// (ACCESO_ATRIBUTO(IDENTIFICADOR)), igual que hace parsearAsignacionCompuesta
+// con 'x += expr'.
+func (p *Parser) parsearAsignacionCampo() *Nodo {
+	lineaID := p.tokenLinea()
+	idNombre := p.esperado(IDENTIFICADOR)
+	p.esperado(PUNTO)
+	nombreCampo := p.esperado(IDENTIFICADOR)
+
+	token := p.tokenActual()
+	if token == nil || token.Tipo != OPERADOR_ASIGNACION {
+		panic(&SintaxisError{
+			ErrorConLinea: ErrorConLinea{
+				Mensaje: fmt.Sprintf("Se esperaba '=' pero se encontró %s", tokenDescripcion(token)),
+				Linea:   &lineaID,
+			},
+		})
+	}
+	opAsignacion := p.esperado(OPERADOR_ASIGNACION)
+
+	expr := p.parsearExpresion()
+
+	baseNodo := NewNodo("IDENTIFICADOR", idNombre, lineaID)
+	campoNodo := NewNodo("CAMPO_ASIGNADO", nombreCampo, lineaID)
+
+	if opAsignacion != "=" {
+		// p.campo += expr  ->  p.campo = p.campo OP (expr)
+		lecturaActual := NewNodo("ACCESO_ATRIBUTO", nombreCampo, lineaID).AgregarHijo(NewNodo("IDENTIFICADOR", idNombre, lineaID))
+		combinado := NewNodo("BINARIA", string(opAsignacion[0]), lineaID).AgregarHijo(lecturaActual).AgregarHijo(expr)
+		return NewNodo("ASIGNACION_CAMPO", nil, lineaID).AgregarHijo(baseNodo).AgregarHijo(campoNodo).AgregarHijo(combinado)
+	}
+
+	return NewNodo("ASIGNACION_CAMPO", nil, lineaID).AgregarHijo(baseNodo).AgregarHijo(campoNodo).AgregarHijo(expr)
+}
+
 // parsearAsignacion parsea una asignación
 func (p *Parser) parsearAsignacion() *Nodo {
 	lineaID := p.tokenLinea()
@@ -468,7 +580,7 @@ func (p *Parser) parsearAsignacion() *Nodo {
 		if token == nil || token.Valor != "=" {
 			panic(&SintaxisError{
 				ErrorConLinea: ErrorConLinea{
-					Mensaje: fmt.Sprintf("Se esperaba '=' pero se encontró %v", token),
+					Mensaje: fmt.Sprintf("Se esperaba '=' pero se encontró %s", tokenDescripcion(token)),
 					Linea:   &lineaID,
 				},
 			})
@@ -483,7 +595,7 @@ func (p *Parser) parsearAsignacion() *Nodo {
 	if token == nil || token.Valor != "=" {
 		panic(&SintaxisError{
 			ErrorConLinea: ErrorConLinea{
-				Mensaje: fmt.Sprintf("Se esperaba '=' pero se encontró %v", token),
+				Mensaje: fmt.Sprintf("Se esperaba '=' pero se encontró %s", tokenDescripcion(token)),
 				Linea:   &lineaID,
 			},
 		})
@@ -509,7 +621,7 @@ func (p *Parser) parsearDeclaracionTipada() *Nodo {
 	if token == nil || token.Valor != "=" {
 		panic(&SintaxisError{
 			ErrorConLinea: ErrorConLinea{
-				Mensaje: fmt.Sprintf("Se esperaba '=' pero se encontró %v", token),
+				Mensaje: fmt.Sprintf("Se esperaba '=' pero se encontró %s", tokenDescripcion(token)),
 				Linea:   &lineaTipo,
 			},
 		})
@@ -584,9 +696,13 @@ func (p *Parser) esperarSimbolo(tipoTok TipoToken, valor string) {
 	linea := p.tokenLinea()
 	tok := p.tokenActual()
 	if tok == nil || tok.Tipo != tipoTok || tok.Valor != valor {
+		visto := "fin del archivo"
+		if tok != nil {
+			visto = tokenDescripcion(tok)
+		}
 		panic(&SintaxisError{
 			ErrorConLinea: ErrorConLinea{
-				Mensaje: fmt.Sprintf("Se esperaba '%s' pero se encontró %v", valor, tok),
+				Mensaje: fmt.Sprintf("Se esperaba '%s' pero se encontró %s", valor, visto),
 				Linea:   &linea,
 			},
 		})
@@ -611,7 +727,7 @@ func (p *Parser) parsearAsignacionCompuesta() *Nodo {
 		if token == nil || token.Tipo != OPERADOR_ASIGNACION {
 			panic(&SintaxisError{
 				ErrorConLinea: ErrorConLinea{
-					Mensaje: fmt.Sprintf("Se esperaba un operador de asignación compuesta pero se encontró %v", token),
+					Mensaje: fmt.Sprintf("Se esperaba un operador de asignación compuesta pero se encontró %s", tokenDescripcion(token)),
 					Linea:   &lineaID,
 				},
 			})
@@ -634,7 +750,7 @@ func (p *Parser) parsearAsignacionCompuesta() *Nodo {
 	if token == nil || token.Tipo != OPERADOR_ASIGNACION {
 		panic(&SintaxisError{
 			ErrorConLinea: ErrorConLinea{
-				Mensaje: fmt.Sprintf("Se esperaba un operador de asignación compuesta pero se encontró %v", token),
+				Mensaje: fmt.Sprintf("Se esperaba un operador de asignación compuesta pero se encontró %s", tokenDescripcion(token)),
 				Linea:   &lineaID,
 			},
 		})
@@ -1084,6 +1200,14 @@ func (p *Parser) parsearClausulaSino(lineaSi int, indentSi int) []*Nodo {
 func (p *Parser) parsearClausulademas(idxdemas int, lineaSi int) []*Nodo {
 	p.posicion = idxdemas
 	p.esperado(PALABRA_CLAVE) // demas
+	return p.parsearBloqueDemas(lineaSi)
+}
+
+// parsearBloqueDemas parsea ':' + el bloque de un else terminal, con la
+// palabra clave ('demas', o 'sino' sin condición — alias equivalente, ver
+// parsearClausulaSinoSi) ya consumida. Compartida por ambas formas para
+// que 'sino:' y 'demas:' se comporten exactamente igual.
+func (p *Parser) parsearBloqueDemas(lineaSi int) []*Nodo {
 	p.esperado(PUNTOS)
 
 	if p.tokenActual() == nil || p.tokenActual().Tipo != NUEVA_LINEA {
@@ -1131,6 +1255,13 @@ func (p *Parser) parsearClausulademas(idxdemas int, lineaSi int) []*Nodo {
 func (p *Parser) parsearClausulaSinoSi(idxSino int, lineaSi int, indentSi int) []*Nodo {
 	p.posicion = idxSino
 	p.esperado(PALABRA_CLAVE) // sino
+
+	// 'sino:' sin condición es un else terminal: alias exacto de 'demas:'.
+	// (El 'sino' con condición, 'sino cond:' o 'sino si cond:', sigue
+	// funcionando como else-if y se maneja más abajo.)
+	if p.tokenActual() != nil && p.tokenActual().Tipo == PUNTOS {
+		return p.parsearBloqueDemas(lineaSi)
+	}
 
 	if p.tokenActual() != nil && p.tokenActual().Tipo == PALABRA_CLAVE && p.tokenActual().Valor == "si" {
 		p.esperado(PALABRA_CLAVE)
@@ -1603,7 +1734,7 @@ func (p *Parser) parsearPara() *Nodo {
 	} else {
 		panic(&SintaxisError{
 			ErrorConLinea: ErrorConLinea{
-				Mensaje: fmt.Sprintf("Se esperaba 'en', pero se encontró %v", tokenEn),
+				Mensaje: fmt.Sprintf("Se esperaba 'en', pero se encontró %s", tokenDescripcion(tokenEn)),
 				Linea:   &linea,
 			},
 		})
@@ -1800,7 +1931,7 @@ func (p *Parser) parsearPostfijos(nodo *Nodo) *Nodo {
 			} else {
 				panic(&SintaxisError{
 					ErrorConLinea: ErrorConLinea{
-						Mensaje: fmt.Sprintf("Se esperaba identificador después de '.', pero encontró %v", tokenAtributo),
+						Mensaje: fmt.Sprintf("Se esperaba identificador después de '.', pero se encontró %s", tokenDescripcion(tokenAtributo)),
 						Linea:   &linea,
 					},
 				})
@@ -1840,6 +1971,86 @@ func (p *Parser) parsearPostfijos(nodo *Nodo) *Nodo {
 	return nodo
 }
 
+// asignarLinea fija recursivamente la línea de un nodo y sus hijos. Se
+// usa para los nodos de las expresiones interpoladas: nacen de un
+// sub-parseo que los numera desde 1, pero para los mensajes de error
+// tienen que apuntar a la línea real de la sentencia donde está la cadena.
+func asignarLinea(n *Nodo, linea int) {
+	if n == nil {
+		return
+	}
+	n.Linea = linea
+	for _, h := range n.Hijos {
+		asignarLinea(h, linea)
+	}
+}
+
+// parsearSubexpresion parsea una expresión suelta a partir de una lista
+// de tokens ya lexados. Se usa para las {expresiones} de una cadena
+// interpolada: cada una se lexea y parsea por separado, como si fuera un
+// programa mínimo de una sola expresión. Si queda algún token sin
+// consumir (p. ej. 'c"{a +}"'), se reporta error de sintaxis.
+func parsearSubexpresion(tokens []Token) *Nodo {
+	filtrados := make([]Token, 0, len(tokens))
+	for _, t := range tokens {
+		if t.Tipo != NUEVA_LINEA {
+			filtrados = append(filtrados, t)
+		}
+	}
+	if len(filtrados) == 0 {
+		linea := 0
+		panic(&SintaxisError{
+			ErrorConLinea: ErrorConLinea{
+				Mensaje: "interpolación vacía '{}' en cadena interpolada; poné una expresión entre las llaves",
+				Linea:   &linea,
+			},
+		})
+	}
+	sub := &Parser{tokens: filtrados, posicion: 0}
+	nodo := sub.parsearExpresion()
+	if sub.tokenActual() != nil {
+		linea := sub.tokenActual().Linea
+		panic(&SintaxisError{
+			ErrorConLinea: ErrorConLinea{
+				Mensaje: fmt.Sprintf("expresión inválida o incompleta en interpolación: %s", tokenDescripcion(sub.tokenActual())),
+				Linea:   &linea,
+			},
+		})
+	}
+	return nodo
+}
+
+// parsearCadenaInterpolada parsea el contenido de una cadena interpolada
+// c"..." (ya sin el prefijo 'c' ni las comillas): separa literales y
+// {expresiones} con parseInterpolatedString, parsea cada expresión con un
+// sub-parser y las guarda como HIJOS del nodo, en el mismo orden en que
+// aparecen en el texto. Los literales siguen viviendo en Valor: el
+// codegen los vuelve a separar con parseInterpolatedString y los
+// intercala con la emisión de los hijos. Así '{p.x}' y '{sumar(1, 2)}'
+// son expresiones completas de verdad, no solo nombres de variable.
+func (p *Parser) parsearCadenaInterpolada(texto string, linea int) *Nodo {
+	nodo := NewNodo("CADENA_INTERPOLADA", texto, linea)
+	_, expresiones := parseInterpolatedString(texto)
+	for _, expr := range expresiones {
+		recortada := strings.TrimSpace(expr)
+		if recortada == "" {
+			lineaVacia := linea
+			panic(&SintaxisError{
+				ErrorConLinea: ErrorConLinea{
+					Mensaje: "interpolación vacía '{}' en cadena interpolada; poné una expresión entre las llaves",
+					Linea:   &lineaVacia,
+				},
+			})
+		}
+		lexer := NewLexer()
+		tokens := lexer.Tokenize(recortada)
+		hijo := parsearSubexpresion(tokens)
+		asignarLinea(hijo, linea)
+		nodo.AgregarHijo(hijo)
+	}
+	return nodo
+}
+
 // parsearAtomo parsea un átomo (literal, variable, etc.)
 func (p *Parser) parsearAtomo() *Nodo {
 	token := p.tokenActual()
@@ -1860,7 +2071,7 @@ func (p *Parser) parsearAtomo() *Nodo {
 
 	case CADENA_INTERPOLADA:
 		valor := p.esperado(CADENA_INTERPOLADA)
-		return NewNodo("CADENA_INTERPOLADA", valor[2:len(valor)-1], linea)
+		return p.parsearCadenaInterpolada(valor[2:len(valor)-1], linea)
 
 	case CADENA_TEXTO:
 		valor := p.esperado(CADENA_TEXTO)
@@ -1990,7 +2201,7 @@ func (p *Parser) parsearAtomo() *Nodo {
 
 	panic(&SintaxisError{
 		ErrorConLinea: ErrorConLinea{
-			Mensaje: fmt.Sprintf("Factor inesperado: %v", token),
+			Mensaje: fmt.Sprintf("Expresión inesperada: %s", tokenDescripcion(token)),
 			Linea:   &linea,
 		},
 	})

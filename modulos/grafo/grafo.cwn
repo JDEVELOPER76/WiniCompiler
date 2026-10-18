@@ -1,0 +1,204 @@
+# =====================================================================
+# grafo.cwn — grafos con diccionario<cadena, lista<cadena>> (Wini puro)
+# ---------------------------------------------------------------------
+# El grafo es un diccionario nodo -> lista de vecinos. Las aristas se
+# agregan con gra_agregar_arista (muta el diccionario).
+#
+#   diccionario<cadena, lista<cadena>> g = {}
+#   gra_agregar_arista(g, "a", "b", verdadero)
+#   lista<cadena> v = gra_bfs(g, "a")
+#   lista<cadena> c = gra_camino(g, "a", "b")
+#
+# Dirigido = verdadero: la arista va de 'a' a 'b' nomás. No dirigido =
+# falso: se agrega en ambos sentidos. Los nodos aislados se crean con
+# gra_agregar_nodo. DFS usa pila explícita (recursión profunda puede
+# desbordar). gra_tiene_ciclo es para NO dirigidos; para dirigidos usá
+# gra_tiene_ciclo_dirigido.
+# Sin imports. Solo builtins.
+# =====================================================================
+
+# Crea el nodo sin aristas si no existía.
+funcion gra_agregar_nodo(g: diccionario<cadena, lista<cadena>>, n: cadena) -> vacio:
+    si no gra_tiene(g, n):
+        lista<cadena> vacia_l = []
+        g[n] = vacia_l
+
+funcion gra_tiene(g: diccionario<cadena, lista<cadena>>, n: cadena) -> booleano:
+    para k en claves(g):
+        si k == n:
+            retornar verdadero
+    retornar falso
+
+funcion gra_agregar_arista(g: diccionario<cadena, lista<cadena>>, a: cadena, b: cadena, dirigido: booleano) -> vacio:
+    gra_agregar_nodo(g, a)
+    gra_agregar_nodo(g, b)
+    g[a] = gra_poner_vecino(g[a], b)
+    si no dirigido:
+        g[b] = gra_poner_vecino(g[b], a)
+
+# Agrega vecino si no estaba (sin duplicados).
+funcion gra_poner_vecino(v: lista<cadena>, n: cadena) -> lista<cadena>:
+    para x en v:
+        si x == n:
+            retornar v
+    retornar agregar(v, n)
+
+funcion gra_vecinos(g: diccionario<cadena, lista<cadena>>, n: cadena) -> lista<cadena>:
+    si vacia(g[n]):
+        retornar []
+    retornar g[n]
+
+funcion gra_nodos(g: diccionario<cadena, lista<cadena>>) -> lista<cadena>:
+    retornar claves(g)
+
+# Cantidad de aristas contadas una sola vez (dirigidos = una por par).
+funcion gra_cantidad_aristas(g: diccionario<cadena, lista<cadena>>) -> entero:
+    entero total = 0
+    para k en claves(g):
+        total = total + longitud(g[k])
+    retornar total
+
+# --- recorridos --------------------------------------------------------
+
+# Breadth-first desde 'inicio'. Devuelve el orden de visita; los nodos
+# inalcanzables no aparecen.
+funcion gra_bfs(g: diccionario<cadena, lista<cadena>>, inicio: cadena) -> lista<cadena>:
+    lista<cadena> visitados = []
+    si no gra_tiene(g, inicio):
+        retornar visitados
+    lista<cadena> cola = [inicio]
+    visitados = agregar(visitados, inicio)
+    entero cabeza = 0
+    mientras cabeza < longitud(cola):
+        cadena actual = cola[cabeza]
+        cabeza = cabeza + 1
+        para v en gra_vecinos(g, actual):
+            si no contienen(visitados, v):
+                visitados = agregar(visitados, v)
+                cola = agregar(cola, v)
+    retornar visitados
+
+# Depth-first con pila explícita (preorden).
+funcion gra_dfs(g: diccionario<cadena, lista<cadena>>, inicio: cadena) -> lista<cadena>:
+    lista<cadena> visitados = []
+    si no gra_tiene(g, inicio):
+        retornar visitados
+    lista<cadena> pila = [inicio]
+    mientras no vacia(pila):
+        cadena actual = ultimo(pila)
+        pila = quitar(pila, longitud(pila) - 1)
+        si no contienen(visitados, actual):
+            visitados = agregar(visitados, actual)
+            # se empujan al revés para visitar en orden de vecinos
+            lista<cadena> vs = gra_vecinos(g, actual)
+            entero i = longitud(vs) - 1
+            mientras i >= 0:
+                pila = agregar(pila, vs[i])
+                i = i - 1
+    retornar visitados
+
+# Verdadero si 'n' está en la lista.
+funcion contienen(l: lista<cadena>, n: cadena) -> booleano:
+    para x en l:
+        si x == n:
+            retornar verdadero
+    retornar falso
+
+# --- caminos -----------------------------------------------------------
+
+# Camino más corto (en cantidad de aristas) de 'a' a 'b' por BFS, o []
+# si no hay. Incluye los extremos.
+funcion gra_camino(g: diccionario<cadena, lista<cadena>>, a: cadena, b: cadena) -> lista<cadena>:
+    lista<cadena> res = []
+    si no gra_tiene(g, a) o no gra_tiene(g, b):
+        retornar res
+    diccionario<cadena, cadena> previo = {}
+    lista<cadena> visitados = [a]
+    lista<cadena> cola = [a]
+    entero cabeza = 0
+    booleano encontrado = falso
+    mientras cabeza < longitud(cola) y no encontrado:
+        cadena actual = cola[cabeza]
+        cabeza = cabeza + 1
+        para v en gra_vecinos(g, actual):
+            si no contienen(visitados, v):
+                visitados = agregar(visitados, v)
+                cola = agregar(cola, v)
+                previo[v] = actual
+                si v == b:
+                    encontrado = verdadero
+    si no encontrado:
+        retornar res
+    # reconstruye de atrás hacia adelante
+    cadena actual2 = b
+    mientras actual2 != a:
+        res = insertar(res, 0, actual2)
+        actual2 = previo[actual2]
+    res = insertar(res, 0, a)
+    retornar res
+
+funcion gra_alcanzable(g: diccionario<cadena, lista<cadena>>, a: cadena, b: cadena) -> booleano:
+    retornar no vacia(gra_camino(g, a, b)) o a == b
+
+# --- ciclos y componentes ----------------------------------------------
+
+# ¿El grafo NO dirigido tiene ciclo? DFS con seguimiento de padre.
+funcion gra_tiene_ciclo(g: diccionario<cadena, lista<cadena>>) -> booleano:
+    lista<cadena> visitados = []
+    para n en claves(g):
+        si no contienen(visitados, n):
+            si gra_ciclo_desde(g, n, "", visitados):
+                retornar verdadero
+    retornar falso
+
+funcion gra_ciclo_desde(g: diccionario<cadena, lista<cadena>>, n: cadena, padre: cadena, visitados: lista<cadena>) -> booleano:
+    visitados = agregar(visitados, n)
+    para v en gra_vecinos(g, n):
+        si v == padre:
+            continuar
+        si contienen(visitados, v):
+            retornar verdadero
+        si gra_ciclo_desde(g, v, n, visitados):
+            retornar verdadero
+    retornar falso
+
+# ¿El grafo DIRIGIDO tiene ciclo? Coloreo: blanco/gris/negro; arista
+# hacia un nodo gris (en la pila actual) = ciclo.
+funcion gra_tiene_ciclo_dirigido(g: diccionario<cadena, lista<cadena>>) -> booleano:
+    diccionario<cadena, cadena> color = {}
+    para n en claves(g):
+        color[n] = "blanco"
+    para n en claves(g):
+        si color[n] == "blanco":
+            si gra_ciclo_dir_desde(g, n, color):
+                retornar verdadero
+    retornar falso
+
+funcion gra_ciclo_dir_desde(g: diccionario<cadena, lista<cadena>>, n: cadena, color: diccionario<cadena, cadena>) -> booleano:
+    color[n] = "gris"
+    para v en gra_vecinos(g, n):
+        si color[v] == "gris":
+            retornar verdadero
+        si color[v] == "blanco":
+            si gra_ciclo_dir_desde(g, v, color):
+                retornar verdadero
+    color[n] = "negro"
+    retornar falso
+
+# Componentes conexas (para el caso no dirigido; para el dirigido da
+# las débilmente conexas si interpretás las aristas como no dirigidas:
+# acá se usa la relación de vecindad como está en el diccionario).
+funcion gra_componentes(g: diccionario<cadena, lista<cadena>>) -> lista<lista<cadena>>:
+    lista<lista<cadena>> res = []
+    lista<cadena> visitados = []
+    para n en claves(g):
+        si no contienen(visitados, n):
+            lista<cadena> comp = gra_bfs(g, n)
+            para x en comp:
+                visitados = agregar(visitados, x)
+            res = agregar(res, comp)
+    retornar res
+
+# Grado de salida de un nodo.
+funcion gra_grado(g: diccionario<cadena, lista<cadena>>, n: cadena) -> entero:
+    retornar longitud(gra_vecinos(g, n))

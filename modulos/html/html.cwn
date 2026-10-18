@@ -1,0 +1,183 @@
+# =====================================================================
+# html.cwn — escape de HTML y armado mínimo de etiquetas (Wini puro)
+# ---------------------------------------------------------------------
+#   cadena s = html.html_escapar("<b>hola & chau</b>")
+#   # "&lt;b&gt;hola &amp; chau&lt;/b&gt;"
+#   cadena t = html.html_desescapar(s)
+#
+#   cadena e = html.html_etiqueta("p", "hola")
+#   # "<p>hola</p>"
+#   cadena a = html.html_etiqueta_atributos("img", attrs)
+#   # "<img src=\"x\" alt=\"y\"/>"
+#   cadena v = html.html_valor_atributo("a\"b'c&d")
+#   # "a&quot;b'c&amp;d"   (para pegar entre comillas dobles)
+#
+# Entidades: las 5 con nombre (&amp; &lt; &gt; &quot; &#39;) más
+# &#...; numericas al html_desescapar (imprimibles ASCII 32-126, igual que
+# wxml/escape). Las desconocidas se dejan tal cual.
+# Sin imports. Solo builtins.
+# =====================================================================
+
+funcion html_imprimibles() -> cadena:
+    retornar " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+
+funcion html_chr(code: entero) -> cadena:
+    si code < 32 o code > 126:
+        retornar "?"
+    cadena t = html_imprimibles()
+    retornar t[code - 32]
+
+funcion html_hex_valor(ch: cadena) -> entero:
+    si ch >= "0" y ch <= "9":
+        retornar entero(ch)
+    si ch == "a" o ch == "A":
+        retornar 10
+    si ch == "b" o ch == "B":
+        retornar 11
+    si ch == "c" o ch == "C":
+        retornar 12
+    si ch == "d" o ch == "D":
+        retornar 13
+    si ch == "e" o ch == "E":
+        retornar 14
+    si ch == "f" o ch == "F":
+        retornar 15
+    retornar -1
+
+# --- escape ------------------------------------------------------------
+
+funcion html_escapar(s: cadena) -> cadena:
+    cadena r = ""
+    para ch en s:
+        si ch == "&":
+            r = r + "&amp;"
+        sino si ch == "<":
+            r = r + "&lt;"
+        sino si ch == ">":
+            r = r + "&gt;"
+        sino si ch == "\"":
+            r = r + "&quot;"
+        demas:
+            r = r + ch
+    retornar r
+
+# Solo lo necesario para un valor entre comillas dobles de atributo.
+funcion html_valor_atributo(s: cadena) -> cadena:
+    cadena r = ""
+    para ch en s:
+        si ch == "&":
+            r = r + "&amp;"
+        sino si ch == "\"":
+            r = r + "&quot;"
+        sino si ch == "<":
+            r = r + "&lt;"
+        sino si ch == ">":
+            r = r + "&gt;"
+        demas:
+            r = r + ch
+    retornar r
+
+# Corta s[ini..fin) (índices exclusivos).
+funcion html_cortar(s: cadena, ini: entero, fin: entero) -> cadena:
+    cadena r = ""
+    entero i = ini
+    mientras i < fin:
+        r = r + s[i]
+        i = i + 1
+    retornar r
+
+# Parsea el cuerpo de una entidad numérica ("#65", "#x41"). -1 si es inválida.
+funcion html_parse_num(cuerpo: cadena) -> entero:
+    entero n = longitud(cuerpo)
+    si n < 2:
+        retornar -1
+    si cuerpo[1] == "x" o cuerpo[1] == "X":
+        si n < 3:
+            retornar -1
+        entero code = 0
+        entero k = 2
+        mientras k < n:
+            entero d = html_hex_valor(cuerpo[k])
+            si d < 0:
+                retornar -1
+            code = code * 16 + d
+            k = k + 1
+        retornar code
+    entero code2 = 0
+    entero k2 = 1
+    mientras k2 < n:
+        si cuerpo[k2] < "0" o cuerpo[k2] > "9":
+            retornar -1
+        code2 = code2 * 10 + entero(cuerpo[k2])
+        k2 = k2 + 1
+    retornar code2
+
+funcion html_desescapar(s: cadena) -> cadena:
+    cadena r = ""
+    entero n = longitud(s)
+    entero i = 0
+    mientras i < n:
+        si s[i] != "&":
+            r = r + s[i]
+            i = i + 1
+        demas:
+            entero j = i + 1
+            mientras j < n y j < i + 10:
+                si s[j] == ";":
+                    romper
+                j = j + 1
+            si j >= n o s[j] != ";":
+                r = r + "&"
+                i = i + 1
+            demas:
+                cadena cuerpo = html_cortar(s, i + 1, j)
+                si cuerpo == "amp":
+                    r = r + "&"
+                    i = j + 1
+                sino si cuerpo == "lt":
+                    r = r + "<"
+                    i = j + 1
+                sino si cuerpo == "gt":
+                    r = r + ">"
+                    i = j + 1
+                sino si cuerpo == "quot":
+                    r = r + "\""
+                    i = j + 1
+                sino si cuerpo == "apos" o cuerpo == "#39":
+                    r = r + "'"
+                    i = j + 1
+                sino si longitud(cuerpo) > 1 y cuerpo[0] == "#":
+                    entero code = html_parse_num(cuerpo)
+                    si code < 0:
+                        r = r + html_cortar(s, i, j + 1)
+                        i = j + 1
+                    demas:
+                        r = r + html_chr(code)
+                        i = j + 1
+                demas:
+                    r = r + html_cortar(s, i, j + 1)
+                    i = j + 1
+    retornar r
+
+# --- armado de etiquetas -----------------------------------------------
+
+# Etiqueta con contenido, escapado: <p>hola</p>.
+funcion html_etiqueta(nombre: cadena, contenido: cadena) -> cadena:
+    retornar "<" + nombre + ">" + html_escapar(contenido) + "</" + nombre + ">"
+
+# Etiqueta con contenido SIN html_escapar (para HTML ya armado).
+funcion html_etiqueta_cruda(nombre: cadena, contenido: cadena) -> cadena:
+    retornar "<" + nombre + ">" + contenido + "</" + nombre + ">"
+
+# Etiqueta vacía auto-cerrada con atributos escapados: <img .../>.
+funcion html_etiqueta_atributos(nombre: cadena, atributos: diccionario<cadena, cadena>) -> cadena:
+    cadena r = "<" + nombre
+    lista<cadena> ks = claves(atributos)
+    para k en ks:
+        r = r + " " + k + "=\"" + html_valor_atributo(atributos[k]) + "\""
+    r = r + "/>"
+    retornar r
+
+# Comentario HTML seguro (sin "--" adentro).
+funcion html_comentario(texto: cadena) -> cadena:
+    retornar "<!-- " + texto + " -->"

@@ -1,0 +1,144 @@
+# =====================================================================
+# tipos.cwn — XmlNodo/XmlResultado + constructores y accesores (Wini puro)
+# ---------------------------------------------------------------------
+# Modelo mínimo del árbol XML:
+#
+#   XmlNodo:
+#     etiqueta   : nombre de la etiqueta ("libro", "persona", ...)
+#     texto      : contenido de texto directo (sin hijos) ya desescapado.
+#                  "" si no tiene texto o si solo tenía indentación.
+#     atributos  : diccionario<cadena, cadena> (valores ya desescapados)
+#     hijos      : lista<XmlNodo> (elementos anidados en orden)
+#
+#   XmlResultado:
+#     ok/error/pos/valor como en wjson (ok falso => error + pos).
+#
+# Mezclado (<p>hola <b>mundo</b> chau</p>): el texto de antes y después
+# del hijo se concatena en 'texto' ("hola  chau"). Si un nodo tiene
+# hijos y su texto es solo espacios (indentación del bonito), se guarda
+# "" para que el roundtrip no duplique espacios.
+#
+# Sin dependencias: solo builtins (longitud, agregar, quitar, en, etc.).
+# =====================================================================
+
+estructura XmlNodo:
+    etiqueta: cadena
+    texto: cadena
+    atributos: diccionario<cadena, cadena>
+    hijos: lista<XmlNodo>
+
+estructura XmlResultado:
+    ok: booleano
+    error: cadena
+    pos: entero
+    valor: XmlNodo
+
+# --- constructores -----------------------------------------------------
+
+funcion xml_nodo(etiqueta: cadena) -> XmlNodo:
+    diccionario<cadena, cadena> attrs = {}
+    lista<XmlNodo> h = []
+    XmlNodo v = XmlNodo(etiqueta, "", attrs, h)
+    retornar v
+
+funcion xml_nodo_texto(etiqueta: cadena, texto: cadena) -> XmlNodo:
+    diccionario<cadena, cadena> attrs = {}
+    lista<XmlNodo> h = []
+    XmlNodo v = XmlNodo(etiqueta, texto, attrs, h)
+    retornar v
+
+funcion xml_nodo_completo(etiqueta: cadena, texto: cadena, atributos: diccionario<cadena, cadena>, hijos: lista<XmlNodo>) -> XmlNodo:
+    XmlNodo v = XmlNodo(etiqueta, texto, atributos, hijos)
+    retornar v
+
+# --- predicados --------------------------------------------------------
+
+funcion xml_es_hoja(n: XmlNodo) -> booleano:
+    retornar longitud(n.hijos) == 0
+
+funcion xml_tiene_atributo(n: XmlNodo, clave: cadena) -> booleano:
+    retornar clave en n.atributos
+
+funcion xml_tiene_hijos(n: XmlNodo) -> booleano:
+    retornar longitud(n.hijos) > 0
+
+funcion xml_tiene_texto(n: XmlNodo) -> booleano:
+    retornar longitud(n.texto) > 0
+
+funcion xml_tiene_hijo(n: XmlNodo, etiqueta: cadena) -> booleano:
+    retornar xml_hijo_indice(n, etiqueta) != -1
+
+# --- accesores simples -------------------------------------------------
+
+funcion xml_texto(n: XmlNodo) -> cadena:
+    retornar n.texto
+
+funcion xml_etiqueta(n: XmlNodo) -> cadena:
+    retornar n.etiqueta
+
+funcion xml_num_atributos(n: XmlNodo) -> entero:
+    retornar longitud(n.atributos)
+
+funcion xml_num_hijos(n: XmlNodo) -> entero:
+    retornar longitud(n.hijos)
+
+funcion xml_atributo(n: XmlNodo, clave: cadena) -> cadena:
+    si clave en n.atributos:
+        retornar n.atributos[clave]
+    retornar ""
+
+funcion xml_atributo_con(n: XmlNodo, clave: cadena, defecto: cadena) -> cadena:
+    si clave en n.atributos:
+        retornar n.atributos[clave]
+    retornar defecto
+
+funcion xml_hijo(n: XmlNodo, idx: entero) -> XmlNodo:
+    retornar n.hijos[idx]
+
+funcion xml_hijos_por_etiqueta(n: XmlNodo, etiqueta: cadena) -> lista<XmlNodo>:
+    lista<XmlNodo> r = []
+    para h en n.hijos:
+        si h.etiqueta == etiqueta:
+            r = agregar(r, h)
+    retornar r
+
+funcion xml_hijo_indice(n: XmlNodo, etiqueta: cadena) -> entero:
+    entero i = 0
+    entero total = longitud(n.hijos)
+    mientras i < total:
+        si n.hijos[i].etiqueta == etiqueta:
+            retornar i
+        i = i + 1
+    retornar -1
+
+# --- mutadores (devuelven el nodo actualizado) --------------------------
+# OJO: igual que en wjson, un diccionario dentro de una estructura no
+# admite 'n.atributos[k] = x' directo: se copia a un temporal y se
+# reasigna el campo completo.
+
+funcion xml_poner_texto(n: XmlNodo, texto: cadena) -> XmlNodo:
+    n.texto = texto
+    retornar n
+
+funcion xml_poner_atributo(n: XmlNodo, clave: cadena, valor: cadena) -> XmlNodo:
+    diccionario<cadena, cadena> tmp = n.atributos
+    tmp[clave] = valor
+    n.atributos = tmp
+    retornar n
+
+funcion xml_quitar_atributo(n: XmlNodo, clave: cadena) -> XmlNodo:
+    diccionario<cadena, cadena> nuevo = {}
+    lista<cadena> ks = claves(n.atributos)
+    para k en ks:
+        si k != clave:
+            nuevo[k] = n.atributos[k]
+    n.atributos = nuevo
+    retornar n
+
+funcion xml_agregar_hijo(n: XmlNodo, hijo: XmlNodo) -> XmlNodo:
+    n.hijos = agregar(n.hijos, hijo)
+    retornar n
+
+funcion xml_quitar_hijo(n: XmlNodo, idx: entero) -> XmlNodo:
+    n.hijos = quitar(n.hijos, idx)
+    retornar n

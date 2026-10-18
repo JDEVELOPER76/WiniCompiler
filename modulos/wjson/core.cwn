@@ -1,0 +1,32 @@
+# =====================================================================
+# core.cwn — versión de wjson (Wini puro, sin imports, sin principal)
+# ---------------------------------------------------------------------
+# La librería son SOLO los archivos de esta carpeta (wjson/*.cwn), por
+# capas con imports reales (no amalgamado):
+#   tipos   : JsonValor/JsonResultado + constructores (sin imports)
+#   escape  : escapar/entrecomillar/desescapar (sin imports)
+#   encode  : codificar (importa escape; tipos vía quien lo use)
+#   decode  : parsear (importa escape; tipos vía quien lo use)
+#   archivo : texto <-> disco (importa system)
+#   api     : abrir/cargar/guardar/bonito (importa tipos+encode+decode+archivo)
+#   core    : versión (sin imports)
+# Ninguno tiene 'principal'. El programa de terminal es main.wn.
+#
+# USO FÁCIL (una línea, tipos incluidos, sin definir nada):
+#   importar "wjson/api" como json
+#   JsonResultado r = json.json_abrir("datos.json")
+#   JsonResultado t = json.json_cargar("{\"a\": 1}")
+#   cadena b = json.json_bonito(r.valor, 4)
+#   json.json_guardar("salida.json", r.valor)
+#   json.json_guardar_bonito("linda.json", r.valor, 2)
+#
+# USO MODULAR (capa que necesites):
+#   importar "wjson/tipos" como tipos
+#   importar "wjson/encode" como enc
+#   importar "wjson/decode" como dec
+#
+# Requiere winic con ESTRUCTURA en módulos (parche modulos.go).
+# =====================================================================
+
+funcion json_version() -> cadena:
+    retornar "wjson 0.5.0 (capas+api+cli)"

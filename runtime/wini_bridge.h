@@ -1,27 +1,35 @@
 /*
- * wini_bridge.h — puente C <-> Wini
- * =================================
+ * wini_bridge.h — puente C <-> Wini (versión mejorada y portable)
+ * =================================================================
  *
- * Capa opcional que facilita escribir código C que habla con Wini en
- * cualquiera de las dos direcciones:
+ * Capa que facilita escribir código C que habla con Wini en cualquiera de
+ * las dos direcciones:
  *
- *   1) C -> Wini : un programa host en C que llama funciones compiladas
- *      desde un archivo .wini (vía `winic archivo.wini -shared -o lib.so`).
+ *   1) C -> Wini : un programa host en C llama funciones compiladas desde
+ *      un archivo .wini (vía `winic archivo.wini -shared -o lib.so`).
  *   2) Wini -> C : la implementación en C de una función declarada
  *      `externa` en Wini.
  *
- * No cambia nada del ABI que ya genera codegen.go: solo envuelve
- * runtime.h con nombres más cómodos y agrega utilidades (append, lectura
- * tipada, captura de excepciones) que el runtime crudo no ofrece.
+ * Esta versión agrega sobre la original:
+ *   - Un tipo variante WiniBridgeValue que puede contener cualquier tipo
+ *     Wini (entero, decimal, booleano, cadena, lista, diccionario, nulo).
+ *   - Invocación genérica por nombre: wini_bridge_invoke("mi_funcion",
+ *     argc, argv, &resultado, &err).
+ *   - Iteradores para recorrer listas y diccionarios desde C.
+ *   - Registro de funciones C nativas (wini_bridge_register_native) para
+ *     que Wini pueda llamarlas como si fueran externas.
+ *   - Inicialización y limpieza del runtime desde C host
+ *       (wini_bridge_init / wini_bridge_cleanup).
  *
- * Requiere: runtime.h y enlazar contra runtime.o (o la .so que ya lo
- * incluya) + wini_bridge.o (este archivo compilado).
+ * Todo es aditivo: la API antigua (wini_bridge_call, call0..call6, etc.)
+ * sigue funcionando tal cual.
  */
 
 #ifndef WINI_BRIDGE_H
 #define WINI_BRIDGE_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,9 +40,9 @@
 extern "C" {
 #endif
 
-/* -------------------------------------------------------------------
+/* =====================================================================
  * Alias de tipos Wini a su tipo C real
- * ------------------------------------------------------------------- */
+ * ===================================================================== */
 typedef int64_t     WINI_ENTERO;
 typedef double      WINI_DECIMAL;
 typedef _Bool       WINI_BOOLEANO;
@@ -42,151 +50,200 @@ typedef WiniString *WINI_CADENA;
 typedef WiniList   *WINI_LISTA;
 typedef WiniDict   *WINI_DICCIONARIO;
 
+/* =====================================================================
+ * Tipo variante: un valor Wini de cualquier tipo
+ *
+ * El caller es dueño del valor devuelto por las funciones de creación y
+ * debe llamar a wini_bridge_value_destruir() cuando termine. Las funciones
+ * "as_" devuelven préstamos (no transfieren ownership).
+ * ===================================================================== */
 typedef enum {
-    WINI_TIPO_ENTERO   = 0,
-    WINI_TIPO_DECIMAL  = 1,
-    WINI_TIPO_BOOLEANO = 2,
-    WINI_TIPO_CADENA   = 3,
-} wini_tipo_elem;
+    WINI_BRIDGE_NULL              = 0,
+    WINI_BRIDGE_ENTERO            = 1,
+    WINI_BRIDGE_DECIMAL           = 2,
+    WINI_BRIDGE_BOOLEANO          = 3,
+    WINI_BRIDGE_CADENA            = 4,
+    WINI_BRIDGE_LISTA             = 5,
+    WINI_BRIDGE_DICCIONARIO       = 6,
+} wini_bridge_tipo;
 
-/* -------------------------------------------------------------------
+typedef struct {
+    wini_bridge_tipo tipo;
+    union {
+        int64_t              entero;
+        double               decimal;
+        _Bool                booleano;
+        WINI_CADENA          cadena;
+        WINI_LISTA           lista;
+        WINI_DICCIONARIO     diccionario;
+    } valor;
+} WiniBridgeValue;
+
+/* Creación de valores variante (el caller es dueño). */
+WiniBridgeValue wini_bridge_value_nulo(void);
+WiniBridgeValue wini_bridge_value_entero(int64_t v);
+WiniBridgeValue wini_bridge_value_decimal(double v);
+WiniBridgeValue wini_bridge_value_booleano(_Bool v);
+/* Para heap: retiene una referencia, así que el caller puede liberar su
+ * copia original si lo desea. */
+WiniBridgeValue wini_bridge_value_cadena(WINI_CADENA s);
+WiniBridgeValue wini_bridge_value_lista(WINI_LISTA l);
+WiniBridgeValue wini_bridge_value_diccionario(WINI_DICCIONARIO d);
+
+/* Libera los recursos que posee un valor variante. Tolera puntero nulo. */
+void wini_bridge_value_destruir(WiniBridgeValue *v);
+
+/* Lectura prestada (no destruye el valor; devuelve 0/0.0/falso/"<nulo>"
+ * si el tipo no coincide). */
+int64_t   wini_bridge_value_as_entero   (WiniBridgeValue *v);
+double    wini_bridge_value_as_decimal  (WiniBridgeValue *v);
+_Bool     wini_bridge_value_as_booleano (WiniBridgeValue *v);
+WINI_CADENA      wini_bridge_value_as_cadena   (WiniBridgeValue *v);
+WINI_LISTA       wini_bridge_value_as_lista    (WiniBridgeValue *v);
+WINI_DICCIONARIO wini_bridge_value_as_diccionario(WiniBridgeValue *v);
+
+/* =====================================================================
  * Cadenas
- * ------------------------------------------------------------------- */
-
-/* Crea una WiniString* NUEVA (rc=1, dueño = quien llama) copiando 'cstr'
- * (terminado en NUL). Si 'cstr' es NULL, se usa "". */
+ * ===================================================================== */
 static inline WINI_CADENA wini_bridge_str(const char *cstr) {
     if (!cstr) cstr = "";
     return wini_string_new(cstr, (int64_t)strlen(cstr));
 }
-
-/* Igual, pero con longitud explícita (para contenido con NUL embebido). */
 static inline WINI_CADENA wini_bridge_str_n(const char *data, int64_t len) {
     return wini_string_new(data, len);
 }
-
-/* Puntero de solo-lectura al contenido (terminado en NUL). NO transfiere
- * dueño. Válido mientras 's' siga vivo. */
 static inline const char *wini_bridge_cstr(WINI_CADENA s) {
     return s ? s->data : "";
 }
-
 static inline int64_t wini_bridge_str_len(WINI_CADENA s) {
     return wini_string_len(s);
 }
-
-/* Azúcar: usar antes de pasar 's' a una función y seguir usándola. */
 static inline WINI_CADENA wini_bridge_retener_str(WINI_CADENA s) {
     return wini_string_retener(s);
 }
-
-/* Azúcar: liberar una referencia propia. */
 static inline void wini_bridge_liberar_str(WINI_CADENA s) {
     wini_liberar_cadena(s);
 }
 
-/* -------------------------------------------------------------------
- * Conversiones primitivo <-> WiniString
- * ------------------------------------------------------------------- */
-
-/* Parseo de una WiniString* a primitivos. No liberan 's'.
- * Si 's' es NULL o no parseable, devuelven 0. */
+/* Conversiones cadena -> primitivo (no liberan 's'). */
 int64_t wini_bridge_to_entero   (WINI_CADENA s);
 double  wini_bridge_to_decimal  (WINI_CADENA s);
 _Bool   wini_bridge_to_booleano (WINI_CADENA s);
 
-/* Construcción de WiniString* a partir de primitivos (rc=1, dueño=caller). */
-static inline WINI_CADENA wini_bridge_from_entero  (int64_t v) { return wini_i64_to_string(v); }
-static inline WINI_CADENA wini_bridge_from_decimal (double v)  { return wini_f64_to_string(v); }
-static inline WINI_CADENA wini_bridge_from_booleano(_Bool v)   { return wini_bool_to_string(v ? 1 : 0); }
-
-/* -------------------------------------------------------------------
- * Listas — construcción
- * ------------------------------------------------------------------- */
-
-static inline WINI_LISTA wini_bridge_list_new_entero  (const int64_t *d, int64_t n) { return wini_list_new_i64((int64_t *)d, n); }
-static inline WINI_LISTA wini_bridge_list_new_decimal (const double  *d, int64_t n) { return wini_list_new_f64((double  *)d, n); }
-static inline WINI_LISTA wini_bridge_list_new_booleano(const int8_t  *d, int64_t n) { return wini_list_new_i1 ((int8_t  *)d, n); }
-/* OJO: wini_list_new_str NO retiene las cadenas. Si vas a liberar tus
- * copias por separado, retené antes con wini_bridge_retener_str(). */
-static inline WINI_LISTA wini_bridge_list_new_cadena  (WiniString **d, int64_t n){ return wini_list_new_str(d, n); }
-
-/* Lista vacía tipada: crea la lista y la devuelve con rc=1. */
+/* =====================================================================
+ * Listas
+ * ===================================================================== */
 WINI_LISTA wini_bridge_list_vacia_entero  (void);
 WINI_LISTA wini_bridge_list_vacia_decimal (void);
 WINI_LISTA wini_bridge_list_vacia_booleano(void);
 WINI_LISTA wini_bridge_list_vacia_cadena  (void);
 
-/* -------------------------------------------------------------------
- * Listas — lectura
- * ------------------------------------------------------------------- */
-
-static inline int64_t     wini_bridge_list_get_entero  (WINI_LISTA l, int64_t i){ return wini_list_get_i64(l, i, 0); }
-static inline double      wini_bridge_list_get_decimal (WINI_LISTA l, int64_t i){ return wini_list_get_f64(l, i, 0); }
-static inline _Bool       wini_bridge_list_get_booleano(WINI_LISTA l, int64_t i){ return wini_list_get_i1 (l, i, 0) != 0; }
-static inline WiniString *wini_bridge_list_get_cadena  (WINI_LISTA l, int64_t i){ return wini_list_get_str(l, i, 0); }
-
-static inline int64_t wini_bridge_list_len(WINI_LISTA l) { return wini_list_len(l); }
-
-/* -------------------------------------------------------------------
- * Listas — escritura (in-place, NO cambia el tamaño)
- * ------------------------------------------------------------------- */
-
-static inline void wini_bridge_list_set_entero  (WINI_LISTA l, int64_t i, int64_t v)     { wini_list_set_i64(l, i, v, 0); }
-static inline void wini_bridge_list_set_decimal (WINI_LISTA l, int64_t i, double v)      { wini_list_set_f64(l, i, v, 0); }
-static inline void wini_bridge_list_set_booleano(WINI_LISTA l, int64_t i, _Bool v)       { wini_list_set_i1 (l, i, (int8_t)(v ? 1 : 0), 0); }
-/* wini_list_set_str libera el elemento anterior: igual que el runtime. */
-static inline void wini_bridge_list_set_cadena  (WINI_LISTA l, int64_t i, WiniString *v){ wini_list_set_str(l, i, v, 0); }
-
-/* -------------------------------------------------------------------
- * Listas — append (crece con realloc). Devuelve la lista (posiblemente
- * reubicada). El caller DEBE reasignar:  l = wini_bridge_list_append_xx(l, v);
- * ------------------------------------------------------------------- */
+/* Append: para cadenas retiene el valor pasado. */
 WINI_LISTA wini_bridge_list_append_entero  (WINI_LISTA l, int64_t v);
 WINI_LISTA wini_bridge_list_append_decimal (WINI_LISTA l, double v);
 WINI_LISTA wini_bridge_list_append_booleano(WINI_LISTA l, _Bool v);
-/* Retiene 'v' antes de guardarlo: podés liberar tu copia después. */
-WINI_LISTA wini_bridge_list_append_cadena  (WINI_LISTA l, WiniString *v);
+WINI_LISTA wini_bridge_list_append_cadena  (WINI_LISTA l, WINI_CADENA v);
 
-static inline WINI_LISTA wini_bridge_retener_lista(WINI_LISTA l) { return wini_list_retener(l); }
-static inline void      wini_bridge_liberar_lista(WINI_LISTA l, wini_tipo_elem t) {
-    wini_liberar_lista(l, (int)t);
-}
+static inline int64_t wini_bridge_list_len(WINI_LISTA l) { return wini_list_len(l); }
+static inline int64_t wini_bridge_list_get_entero  (WINI_LISTA l, int64_t i){ return wini_list_get_i64(l, i, 0); }
+static inline double  wini_bridge_list_get_decimal (WINI_LISTA l, int64_t i){ return wini_list_get_f64(l, i, 0); }
+static inline _Bool   wini_bridge_list_get_booleano(WINI_LISTA l, int64_t i){ return wini_list_get_i1(l, i, 0) != 0; }
+static inline WINI_CADENA wini_bridge_list_get_cadena(WINI_LISTA l, int64_t i){ return wini_list_get_str(l, i, 0); }
 
-/* -------------------------------------------------------------------
- * Diccionarios — construcción / tamaño
- * ------------------------------------------------------------------- */
+/* Iterador de lista: visita cada elemento como WiniBridgeValue.
+ * Retornar 0 detiene la iteración. */
+typedef int (*WiniBridgeVisitElem)(WiniBridgeValue *elem, void *usuario);
+void wini_bridge_list_visitar(WINI_LISTA lista, WiniBridgeVisitElem visitar, void *usuario);
 
-static inline WINI_DICCIONARIO wini_bridge_dict_nuevo(void) { return wini_dict_new(); }
-static inline int64_t          wini_bridge_dict_len  (WINI_DICCIONARIO d){ return wini_dict_len(d); }
+/* =====================================================================
+ * Diccionarios
+ * ===================================================================== */
+WINI_DICCIONARIO wini_bridge_dict_nuevo(void);
+static inline int64_t wini_bridge_dict_len(WINI_DICCIONARIO d){ return wini_dict_len(d); }
 
-/* -------------------------------------------------------------------
- * Diccionarios — get/set/contains SIN consumir la clave
- *
- * El runtime expone wini_dict_get_str_* / wini_dict_set_str_* que
- * CONSUMEN la clave (liberan una referencia). Ese contrato es cómodo
- * desde el codegen (que ya retiene cuando viene de una variable), pero
- * incómodo a mano. Estas envolturas retienen por dentro y liberan al
- * salir, así que la clave del caller queda intacta.
- * ------------------------------------------------------------------- */
-
-/* Clave cadena (NO consume 'k') */
+/* Clave cadena: no consumen la clave (retienen internamente). */
 int64_t      wini_bridge_dict_get_entero_cadena  (WINI_DICCIONARIO d, WINI_CADENA k);
 double       wini_bridge_dict_get_decimal_cadena (WINI_DICCIONARIO d, WINI_CADENA k);
 _Bool        wini_bridge_dict_get_booleano_cadena(WINI_DICCIONARIO d, WINI_CADENA k);
-/* Devuelve el valor SIN retener: es prestado del dict. Si querés
- * conservarlo más allá de un eventual set/delete, retenelo vos. */
 WINI_CADENA  wini_bridge_dict_get_cadena_cadena  (WINI_DICCIONARIO d, WINI_CADENA k);
-
 void wini_bridge_dict_set_entero_cadena  (WINI_DICCIONARIO d, WINI_CADENA k, int64_t v);
 void wini_bridge_dict_set_decimal_cadena (WINI_DICCIONARIO d, WINI_CADENA k, double v);
 void wini_bridge_dict_set_booleano_cadena(WINI_DICCIONARIO d, WINI_CADENA k, _Bool v);
-/* Retiene 'v' antes de guardarlo: podés liberar tu copia después. */
 void wini_bridge_dict_set_cadena_cadena  (WINI_DICCIONARIO d, WINI_CADENA k, WINI_CADENA v);
-
 _Bool wini_bridge_dict_contains_cadena(WINI_DICCIONARIO d, WINI_CADENA k);
 
-/* Variantes _cstr de azúcar: crean la WiniString internamente. */
+/* Iterador de diccionario: clave y valor como WiniBridgeValue.
+ * Retornar 0 detiene la iteración. */
+typedef int (*WiniBridgeVisitDicc)(WiniBridgeValue *clave, WiniBridgeValue *valor, void *usuario);
+void wini_bridge_dict_visitar(WINI_DICCIONARIO d, WiniBridgeVisitDicc visitar, void *usuario);
+
+/* =====================================================================
+ * Captura de excepciones y llamada genérica por nombre
+ * ===================================================================== */
+typedef struct {
+    char    tipo[256];
+    char   *mensaje;   /* asignado con malloc; liberar con free() */
+    int64_t linea;
+    int     codigo;    /* código de error adicional */
+} wini_bridge_error;
+
+/* Prototipo de una función invocable genéricamente. */
+typedef void (*wini_bridge_fn_invoke)(int argc, WiniBridgeValue *argv, WiniBridgeValue *resultado);
+
+/* Llama a una función Wini por nombre (debe estar exportada en el .so o
+ * registrada con wini_bridge_register_native). argc puede ser 0.
+ * Devuelve 0 si OK, -1 si hubo excepción (llena *err). */
+int wini_bridge_invoke(const char *nombre_funcion,
+                       int argc, WiniBridgeValue *argv,
+                       WiniBridgeValue *resultado,
+                       wini_bridge_error *err);
+
+/* =====================================================================
+ * Registro de funciones C para ser llamadas desde Wini (externa inversa)
+ * ===================================================================== */
+/* Firma de una función C expuesta a Wini. */
+typedef void (*wini_bridge_fn_nativo)(int argc, WiniBridgeValue *argv, WiniBridgeValue *resultado);
+
+/* Registra 'fn' bajo 'nombre_wini'. Desde Wini se declara luego:
+ *   externa "nombre_wini" como mi_funcion(a: entero, b: cadena): entero
+ * y el codegen la resuelve contra este registro al cargar el .so.
+ * Devuelve 0 si OK, -1 si ya existía el nombre. */
+int wini_bridge_register_native(const char *nombre_wini,
+                                wini_bridge_fn_nativo fn,
+                                void *usuario);
+
+/* =====================================================================
+ * Inicialización / limpieza del runtime desde C host
+ * ===================================================================== */
+/* Prepara el runtime para ser usado desde un programa host en C.
+ * Devuelve 0 si OK. Llama una vez al inicio. */
+int  wini_bridge_init(void);
+
+/* Limpia recursos del runtime. Llama al salir del programa host. */
+void wini_bridge_cleanup(void);
+
+/* =====================================================================
+ * API antigua (mantenida por compatibilidad)
+ * ===================================================================== */
+typedef void (*wini_bridge_fn)(void *arg, void *result);
+typedef void (*wini_bridge_fn0)(void);
+typedef void (*wini_bridge_fn1)(void *);
+typedef void (*wini_bridge_fn2)(void *, void *);
+typedef void (*wini_bridge_fn3)(void *, void *, void *);
+typedef void (*wini_bridge_fn4)(void *, void *, void *, void *);
+typedef void (*wini_bridge_fn5)(void *, void *, void *, void *, void *);
+typedef void (*wini_bridge_fn6)(void *, void *, void *, void *, void *, void *);
+
+int wini_bridge_call(wini_bridge_fn fn, void *arg, void *result, wini_bridge_error *err);
+void wini_bridge_call0(wini_bridge_fn0 fn, void *result, wini_bridge_error *err);
+void wini_bridge_call1(wini_bridge_fn1 fn, void *a1, void *result, wini_bridge_error *err);
+void wini_bridge_call2(wini_bridge_fn2 fn, void *a1, void *a2, void *a3, void *a4, void *a5, void *a6, void *result, wini_bridge_error *err);
+void wini_bridge_call3(wini_bridge_fn3 fn, void *a1, void *a2, void *a3, void *a4, void *a5, void *a6, void *result, wini_bridge_error *err);
+void wini_bridge_call4(wini_bridge_fn4 fn, void *a1, void *a2, void *a3, void *a4, void *a5, void *a6, void *result, wini_bridge_error *err);
+void wini_bridge_call5(wini_bridge_fn5 fn, void *a1, void *a2, void *a3, void *a4, void *a5, void *a6, void *result, wini_bridge_error *err);
+void wini_bridge_call6(wini_bridge_fn6 fn, void *a1, void *a2, void *a3, void *a4, void *a5, void *a6, void *result, wini_bridge_error *err);
+
+/* Diccionarios _cstr de azúcar. */
 static inline int64_t wini_bridge_dict_get_entero_cstr(WINI_DICCIONARIO d, const char *k) {
     WINI_CADENA s = wini_bridge_str(k);
     int64_t r = wini_bridge_dict_get_entero_cadena(d, s);
@@ -204,56 +261,6 @@ static inline _Bool wini_bridge_dict_contains_cstr(WINI_DICCIONARIO d, const cha
     wini_bridge_liberar_str(s);
     return r;
 }
-
-static inline WINI_DICCIONARIO wini_bridge_retener_dict(WINI_DICCIONARIO d) { return wini_dict_retener(d); }
-static inline void wini_bridge_liberar_dict(WINI_DICCIONARIO d,
-                                             wini_tipo_elem tk,
-                                             wini_tipo_elem tv) {
-    wini_liberar_diccionario(d, (int)tk, (int)tv);
-}
-
-/* -------------------------------------------------------------------
- * Captura de excepciones Wini desde C
- *
- * Permite llamar a una función Wini (o a cualquier código que pueda
- * hacer 'lanzar') sin que un 'lanzar' no capturado mate el proceso.
- *
- * Uso típico:
- *
- *     wini_bridge_error err;
- *     if (wini_bridge_call((wini_bridge_fn)mi_funcion_wini, mi_arg,
- *                          &resultado, &err) < 0) {
- *         fprintf(stderr, "%s: %s\n", err.tipo, err.mensaje);
- *         free(err.mensaje);
- *     }
- *
- * 'fn' recibe 'arg' y escribe en 'result' (si no es NULL). No puede
- * devolver nada por sí misma; para eso, hacé una pequeña función C
- * envoltorio que llame a la de Wini y guarde el retorno en *result.
- * ------------------------------------------------------------------- */
-
-typedef struct {
-    char    tipo[256];
-    char   *mensaje;   /* asignado con malloc; liberar con free() */
-    int64_t linea;
-} wini_bridge_error;
-
-typedef void (*wini_bridge_fn)(void *arg, void *result);
-
-/* Llama 'fn(arg, result)' capturando excepciones.
- * Devuelve 0 si todo OK, -1 si hubo excepción (y llena *err). */
-int wini_bridge_call(wini_bridge_fn fn, void *arg, void *result, wini_bridge_error *err);
-
-/* Variante con prototipo típico "una función Wini que recibe N args".
- * No es variádica de verdad (C no lo permite con tipos heterogéneos);
- * pero cubre el 90% de los casos: hasta 6 argumentos 'void*'. */
-void wini_bridge_call0(void (*fn)(void), void *result, wini_bridge_error *err);
-void wini_bridge_call1(void (*fn)(void *), void *a1, void *result, wini_bridge_error *err);
-void wini_bridge_call2(void (*fn)(void *, void *), void *a1, void *a2, void *result, wini_bridge_error *err);
-void wini_bridge_call3(void (*fn)(void *, void *, void *), void *a1, void *a2, void *a3, void *result, wini_bridge_error *err);
-void wini_bridge_call4(void (*fn)(void *, void *, void *, void *), void *a1, void *a2, void *a3, void *a4, void *result, wini_bridge_error *err);
-void wini_bridge_call5(void (*fn)(void *, void *, void *, void *, void *), void *a1, void *a2, void *a3, void *a4, void *a5, void *result, wini_bridge_error *err);
-void wini_bridge_call6(void (*fn)(void *, void *, void *, void *, void *, void *), void *a1, void *a2, void *a3, void *a4, void *a5, void *a6, void *result, wini_bridge_error *err);
 
 #ifdef __cplusplus
 }

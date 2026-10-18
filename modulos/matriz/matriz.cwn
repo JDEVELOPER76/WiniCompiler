@@ -1,0 +1,260 @@
+# =====================================================================
+# matriz.cwn — matrices como lista<lista<decimal>> (Wini puro)
+# ---------------------------------------------------------------------
+#   lista<lista<decimal>> a = mat_crear(2, 2, 0.0)
+#   lista<lista<decimal>> i = mat_identidad(3)
+#   lista<lista<decimal>> c = mat_multiplicar(a, b)
+#   decimal d = mat_determinante(m)
+#   lista<decimal> x = mat_resolver(a, b)   # sistema lineal a*x = b
+#
+# Convención: m[fila][columna], filas = longitud(m), columnas =
+# longitud(m[0]) (matriz vacía: 0x0). Las funciones de dos operandos
+# lanzan ValueError si las dimensiones no combinan. mat_poner muta la
+# matriz y la devuelve (misma referencia).
+# Sin imports. Solo builtins.
+# =====================================================================
+
+# Crea f x c lleno de 'valor'.
+funcion mat_crear(f: entero, c: entero, valor: decimal) -> lista<lista<decimal>>:
+    lista<lista<decimal>> m = []
+    entero i = 0
+    mientras i < f:
+        lista<decimal> fila = []
+        entero j = 0
+        mientras j < c:
+            fila = agregar(fila, valor)
+            j = j + 1
+        m = agregar(m, fila)
+        i = i + 1
+    retornar m
+
+# [filas, columnas].
+funcion mat_dimensiones(m: lista<lista<decimal>>) -> lista<entero>:
+    lista<entero> r = []
+    r = agregar(r, longitud(m))
+    si vacia(m):
+        r = agregar(r, 0)
+    demas:
+        r = agregar(r, longitud(m[0]))
+    retornar r
+
+funcion mat_es_cuadrada(m: lista<lista<decimal>>) -> booleano:
+    si vacia(m):
+        retornar falso
+    entero n = longitud(m)
+    para f en m:
+        si longitud(f) != n:
+            retornar falso
+    retornar verdadero
+
+# Obtiene m[i][j]. Fuera de rango -> ValueError.
+funcion mat_obtener(m: lista<lista<decimal>>, i: entero, j: entero) -> decimal:
+    si i < 0 o i >= longitud(m):
+        lanzar ValueError(c"mat_obtener: fila {i} fuera de rango")
+    si j < 0 o j >= longitud(m[i]):
+        lanzar ValueError(c"mat_obtener: columna {j} fuera de rango")
+    retornar m[i][j]
+
+# Asigna m[i][j] = v. Wini no permite 'm[i][j] = v' directo sobre una
+# lista anidada, así que se copia la fila, se cambia y se reasigna.
+# Mutan la matriz entera (misma referencia).
+funcion mat_asignar(m: lista<lista<decimal>>, i: entero, j: entero, v: decimal) -> vacio:
+    lista<decimal> fila = m[i]
+    fila[j] = v
+    m[i] = fila
+
+# Pone m[i][j] = v (muta) y devuelve la misma matriz.
+funcion mat_poner(m: lista<lista<decimal>>, i: entero, j: entero, v: decimal) -> lista<lista<decimal>>:
+    si i < 0 o i >= longitud(m):
+        lanzar ValueError(c"mat_poner: fila {i} fuera de rango")
+    si j < 0 o j >= longitud(m[i]):
+        lanzar ValueError(c"mat_poner: columna {j} fuera de rango")
+    mat_asignar(m, i, j, v)
+    retornar m
+
+# Copia profunda (las filas se copian una por una).
+funcion mat_copiar(m: lista<lista<decimal>>) -> lista<lista<decimal>>:
+    lista<lista<decimal>> r = []
+    para f en m:
+        lista<decimal> nf = []
+        para x en f:
+            nf = agregar(nf, x)
+        r = agregar(r, nf)
+    retornar r
+
+# --- operaciones -------------------------------------------------------
+
+# Suma elemento a elemento.
+funcion mat_sumar(a: lista<lista<decimal>>, b: lista<lista<decimal>>) -> lista<lista<decimal>>:
+    si longitud(a) != longitud(b):
+        lanzar ValueError("mat_sumar: distintas cantidades de filas")
+    lista<lista<decimal>> r = []
+    entero i = 0
+    mientras i < longitud(a):
+        si longitud(a[i]) != longitud(b[i]):
+            lanzar ValueError("mat_sumar: distintas cantidades de columnas")
+        lista<decimal> fila = []
+        entero j = 0
+        mientras j < longitud(a[i]):
+            fila = agregar(fila, a[i][j] + b[i][j])
+            j = j + 1
+        r = agregar(r, fila)
+        i = i + 1
+    retornar r
+
+# Multiplica toda la matriz por un escalar.
+funcion mat_escalar(m: lista<lista<decimal>>, k: decimal) -> lista<lista<decimal>>:
+    lista<lista<decimal>> r = []
+    para f en m:
+        lista<decimal> nf = []
+        para x en f:
+            nf = agregar(nf, x * k)
+        r = agregar(r, nf)
+    retornar r
+
+funcion mat_trasponer(m: lista<lista<decimal>>) -> lista<lista<decimal>>:
+    si vacia(m):
+        retornar []
+    entero c = longitud(m[0])
+    lista<lista<decimal>> r = mat_crear(c, longitud(m), 0.0)
+    entero i = 0
+    mientras i < longitud(m):
+        entero j = 0
+        mientras j < c:
+            mat_asignar(r, j, i, m[i][j])
+            j = j + 1
+        i = i + 1
+    retornar r
+
+funcion mat_identidad(n: entero) -> lista<lista<decimal>>:
+    lista<lista<decimal>> m = mat_crear(n, n, 0.0)
+    entero i = 0
+    mientras i < n:
+        mat_asignar(m, i, i, 1.0)
+        i = i + 1
+    retornar m
+
+# Producto matricial clásico. Lanza ValueError si a.columnas != b.filas.
+funcion mat_multiplicar(a: lista<lista<decimal>>, b: lista<lista<decimal>>) -> lista<lista<decimal>>:
+    si vacia(a) o vacia(b):
+        retornar []
+    entero fa = longitud(a)
+    entero ca = longitud(a[0])
+    entero fb = longitud(b)
+    entero cb = longitud(b[0])
+    si ca != fb:
+        lanzar ValueError(c"mat_multiplicar: {ca} columnas no coinciden con {fb} filas")
+    lista<lista<decimal>> r = mat_crear(fa, cb, 0.0)
+    entero i = 0
+    mientras i < fa:
+        entero j = 0
+        mientras j < cb:
+            decimal s = 0.0
+            entero k = 0
+            mientras k < ca:
+                s = s + a[i][k] * b[k][j]
+                k = k + 1
+            mat_asignar(r, i, j, s)
+            j = j + 1
+        i = i + 1
+    retornar r
+
+# --- álgebra lineal ----------------------------------------------------
+
+# Determinante por eliminación de Gauss con pivoteo parcial (copia la
+# matriz; no muta la entrada).
+funcion mat_determinante(m: lista<lista<decimal>>) -> decimal:
+    si no mat_es_cuadrada(m):
+        lanzar ValueError("mat_determinante: se necesita matriz cuadrada")
+    entero n = longitud(m)
+    lista<lista<decimal>> a = mat_copiar(m)
+    decimal det = 1.0
+    entero k = 0
+    mientras k < n:
+        # pivoteo parcial: mejor fila desde k
+        entero mejor = k
+        entero f = k + 1
+        mientras f < n:
+            si a[f][k] > a[mejor][k] o a[f][k] < -a[mejor][k]:
+                mejor = f
+            f = f + 1
+        si a[mejor][k] == 0.0:
+            retornar 0.0
+        si mejor != k:
+            lista<decimal> tmp = a[k]
+            a[k] = a[mejor]
+            a[mejor] = tmp
+            det = -det
+        det = det * a[k][k]
+        entero i = k + 1
+        mientras i < n:
+            decimal factor = a[i][k] / a[k][k]
+            entero j = k
+            mientras j < n:
+                mat_asignar(a, i, j, a[i][j] - factor * a[k][j])
+                j = j + 1
+            i = i + 1
+        k = k + 1
+    retornar det
+
+# Resuelve el sistema a*x = b por Gauss con pivoteo parcial. 'a' debe
+# ser cuadrada; 'b' tiene tantos elementos como filas. Sin solución o
+# infinitas -> ValueError.
+funcion mat_resolver(a: lista<lista<decimal>>, b: lista<decimal>) -> lista<decimal>:
+    si no mat_es_cuadrada(a):
+        lanzar ValueError("mat_resolver: 'a' debe ser cuadrada")
+    entero n = longitud(a)
+    si longitud(b) != n:
+        lanzar ValueError("mat_resolver: 'b' no coincide con las filas de 'a'")
+    # matriz aumentada [a | b]
+    lista<lista<decimal>> m = []
+    entero i = 0
+    mientras i < n:
+        lista<decimal> fila = []
+        entero j = 0
+        mientras j < n:
+            fila = agregar(fila, a[i][j])
+            j = j + 1
+        fila = agregar(fila, b[i])
+        m = agregar(m, fila)
+        i = i + 1
+    # eliminación
+    entero k = 0
+    mientras k < n:
+        entero mejor = k
+        entero f = k + 1
+        mientras f < n:
+            si m[f][k] > m[mejor][k] o m[f][k] < -m[mejor][k]:
+                mejor = f
+            f = f + 1
+        si m[mejor][k] == 0.0:
+            lanzar ValueError("mat_resolver: sistema sin solución única")
+        si mejor != k:
+            lista<decimal> tmp = m[k]
+            m[k] = m[mejor]
+            m[mejor] = tmp
+        entero i2 = k + 1
+        mientras i2 < n:
+            decimal factor = m[i2][k] / m[k][k]
+            entero j = k
+            mientras j <= n:
+                mat_asignar(m, i2, j, m[i2][j] - factor * m[k][j])
+                j = j + 1
+            i2 = i2 + 1
+        k = k + 1
+    # sustitución hacia atrás
+    lista<decimal> x = []
+    entero t = 0
+    mientras t < n:
+        x = agregar(x, 0.0)
+        t = t + 1
+    entero i3 = n - 1
+    mientras i3 >= 0:
+        decimal s = m[i3][n]
+        entero j2 = i3 + 1
+        mientras j2 < n:
+            s = s - m[i3][j2] * x[j2]
+            j2 = j2 + 1
+        x[i3] = s / m[i3][i3]
+        i3 = i3 - 1
+    retornar x

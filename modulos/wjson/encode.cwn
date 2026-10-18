@@ -1,0 +1,163 @@
+# =====================================================================
+# encode.cwn — serialización JsonValor -> texto JSON (Wini puro)
+# ---------------------------------------------------------------------
+# Los tipos JsonValor/JsonResultado vienen de tipos.cwn y el escape de
+# escape.cwn (declarados como dependencias reales del módulo).
+# =====================================================================
+
+importar "escape" como esc
+importar "tipos" como tip
+
+funcion json_codificar(v: JsonValor) -> cadena:
+    si v.clase == "nulo":
+        retornar "null"
+    si v.clase == "logico":
+        si v.logico:
+            retornar "true"
+        retornar "false"
+    si v.clase == "numero":
+        retornar cadena(v.numero)
+    si v.clase == "cadena":
+        retornar "\"" + esc.json_escapar(v.texto) + "\""
+    si v.clase == "arreglo":
+        cadena r = "["
+        entero i = 0
+        entero n = longitud(v.hijos)
+        mientras i < n:
+            si i > 0:
+                r = r + ","
+            r = r + json_codificar(v.hijos[i])
+            i = i + 1
+        r = r + "]"
+        retornar r
+    si v.clase == "objeto":
+        cadena cad = "{"
+        lista<cadena> ks = claves(v.props)
+        entero j = 0
+        entero m = longitud(ks)
+        mientras j < m:
+            cadena k = ks[j]
+            si j > 0:
+                cad = cad + ","
+            cad = cad + "\"" + esc.json_escapar(k) + "\":" + json_codificar(v.props[k])
+            j = j + 1
+        cad = cad + "}"
+        retornar cad
+    retornar "null"
+
+# Repite una unidad de indentación 'nivel' veces.
+# 'espacios' = cantidad de espacios por nivel (2 clásico, 4 amplio).
+funcion json_enc_indent_n(nivel: entero, espacios: entero) -> cadena:
+    cadena r = ""
+    entero i = 0
+    mientras i < nivel:
+        entero k = 0
+        mientras k < espacios:
+            r = r + " "
+            k = k + 1
+        i = i + 1
+    retornar r
+
+# Repite 2 espacios 'nivel' veces (compatibilidad).
+funcion json_enc_indent(nivel: entero) -> cadena:
+    retornar json_enc_indent_n(nivel, 2)
+
+funcion json_codificar_nivel(v: JsonValor, nivel: entero) -> cadena:
+    si v.clase == "nulo":
+        retornar "null"
+    si v.clase == "logico":
+        si v.logico:
+            retornar "true"
+        retornar "false"
+    si v.clase == "numero":
+        retornar cadena(v.numero)
+    si v.clase == "cadena":
+        retornar "\"" + esc.json_escapar(v.texto) + "\""
+    si v.clase == "arreglo":
+        si longitud(v.hijos) == 0:
+            retornar "[]"
+        cadena r = "[\n"
+        entero i = 0
+        entero n = longitud(v.hijos)
+        mientras i < n:
+            r = r + json_enc_indent(nivel + 1) + json_codificar_nivel(v.hijos[i], nivel + 1)
+            si i + 1 < n:
+                r = r + ","
+            r = r + "\n"
+            i = i + 1
+        r = r + json_enc_indent(nivel) + "]"
+        retornar r
+    si v.clase == "objeto":
+        lista<cadena> ks2 = claves(v.props)
+        si longitud(ks2) == 0:
+            retornar "{}"
+        cadena cad2 = "{\n"
+        entero j = 0
+        entero m = longitud(ks2)
+        mientras j < m:
+            cadena k = ks2[j]
+            cad2 = cad2 + json_enc_indent(nivel + 1) + "\"" + esc.json_escapar(k) + "\": " + json_codificar_nivel(v.props[k], nivel + 1)
+            si j + 1 < m:
+                cad2 = cad2 + ","
+            cad2 = cad2 + "\n"
+            j = j + 1
+        cad2 = cad2 + json_enc_indent(nivel) + "}"
+        retornar cad2
+    retornar "null"
+
+funcion json_codificar_bonito(v: JsonValor) -> cadena:
+    retornar json_codificar_nivel(v, 0)
+
+# --- indentación configurable --------------------------------------------
+# json_codificar_con(v, espacios): bonito con N espacios por nivel.
+# Ej: json_codificar_con(v, 4) para indentación amplia.
+
+funcion json_codificar_nivel_con(v: JsonValor, nivel: entero, espacios: entero) -> cadena:
+    si v.clase == "nulo":
+        retornar "null"
+    si v.clase == "logico":
+        si v.logico:
+            retornar "true"
+        retornar "false"
+    si v.clase == "numero":
+        retornar cadena(v.numero)
+    si v.clase == "cadena":
+        retornar "\"" + esc.json_escapar(v.texto) + "\""
+    si v.clase == "arreglo":
+        si longitud(v.hijos) == 0:
+            retornar "[]"
+        cadena r = "[\n"
+        entero i = 0
+        entero n = longitud(v.hijos)
+        mientras i < n:
+            r = r + json_enc_indent_n(nivel + 1, espacios) + json_codificar_nivel_con(v.hijos[i], nivel + 1, espacios)
+            si i + 1 < n:
+                r = r + ","
+            r = r + "\n"
+            i = i + 1
+        r = r + json_enc_indent_n(nivel, espacios) + "]"
+        retornar r
+    si v.clase == "objeto":
+        lista<cadena> ks = claves(v.props)
+        si longitud(ks) == 0:
+            retornar "{}"
+        cadena cad = "{\n"
+        entero j = 0
+        entero m = longitud(ks)
+        mientras j < m:
+            cadena k = ks[j]
+            cad = cad + json_enc_indent_n(nivel + 1, espacios) + "\"" + esc.json_escapar(k) + "\": " + json_codificar_nivel_con(v.props[k], nivel + 1, espacios)
+            si j + 1 < m:
+                cad = cad + ","
+            cad = cad + "\n"
+            j = j + 1
+        cad = cad + json_enc_indent_n(nivel, espacios) + "}"
+        retornar cad
+    retornar "null"
+
+funcion json_codificar_con(v: JsonValor, espacios: entero) -> cadena:
+    si espacios < 0:
+        espacios = 0
+    si espacios == 0:
+        retornar json_codificar(v)
+    retornar json_codificar_nivel_con(v, 0, espacios)

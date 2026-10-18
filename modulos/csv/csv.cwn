@@ -1,0 +1,218 @@
+# =====================================================================
+# csv.cwn — lector y escritor de CSV para Wini (100% Wini puro)
+# ---------------------------------------------------------------------
+#   lista<lista<cadena>> filas = csv.csv_parsear(texto)
+#   cadena s = csv.csv_armar(filas)
+#   cadena s2 = csv.csv_armar_con(filas, ';')
+#
+# Soporta el dialecto RFC 4180: campos entre comillas cuando contienen
+# el separador, comillas dobles o salto de línea; "" = comilla literal;
+# \r\n o \n como fin de fila. Los campos SIEMPRE salen desescapados.
+# 'csv_parsear' no lanza: una fila mal formada se devuelve igual que se
+# pudo leer (documentado: es un lector tolerante, no un validador).
+# Sin imports. Solo builtins.
+# =====================================================================
+
+# Parte el texto en filas con el separador dado (método de la comilla
+# viajera: no depende del número de columnas, así tolera filas
+# irregulares).
+funcion csv_parsear_con(texto: cadena, sep: cadena) -> lista<lista<cadena>>:
+    lista<lista<cadena>> filas = []
+    lista<cadena> fila = []
+    cadena campo = ""
+    booleano en_comillas = falso
+    booleano hay_campo = falso
+    entero n = longitud(texto)
+    entero i = 0
+    mientras i < n:
+        cadena ch = texto[i]
+        si en_comillas:
+            si ch == "\"":
+                si i + 1 < n y texto[i + 1] == "\"":
+                    campo = campo + "\""
+                    i = i + 2
+                    continuar
+                en_comillas = falso
+                i = i + 1
+            demas:
+                campo = campo + ch
+                i = i + 1
+        sino si ch == "\"":
+            en_comillas = verdadero
+            hay_campo = verdadero
+            i = i + 1
+        sino si sep == "," y ch == ",":
+            fila = agregar(fila, campo)
+            campo = ""
+            hay_campo = falso
+            i = i + 1
+        sino si sep == "\t" y ch == "\t":
+            fila = agregar(fila, campo)
+            campo = ""
+            hay_campo = falso
+            i = i + 1
+        sino si sep == ";" y ch == ";":
+            fila = agregar(fila, campo)
+            campo = ""
+            hay_campo = falso
+            i = i + 1
+        sino si sep == "|" y ch == "|":
+            fila = agregar(fila, campo)
+            campo = ""
+            hay_campo = falso
+            i = i + 1
+        sino si longitud(sep) > 1 y csv_empieza_en(texto, i, sep):
+            fila = agregar(fila, campo)
+            campo = ""
+            hay_campo = falso
+            i = i + longitud(sep)
+        sino si ch == "\n":
+            fila = agregar(fila, campo)
+            filas = agregar(filas, fila)
+            fila = []
+            campo = ""
+            hay_campo = falso
+            i = i + 1
+        sino si ch == "\r":
+            i = i + 1
+        demas:
+            campo = campo + ch
+            hay_campo = verdadero
+            i = i + 1
+    si hay_campo o longitud(campo) > 0 o longitud(fila) > 0:
+        fila = agregar(fila, campo)
+        filas = agregar(filas, fila)
+    retornar filas
+
+# Separador ',' por defecto (usá csv_parsear_con para otro).
+funcion csv_parsear(texto: cadena) -> lista<lista<cadena>>:
+    retornar csv_parsear_con(texto, ",")
+
+# Verdadero si 'texto' en la posición 'desde' empieza con 'sub'.
+funcion csv_empieza_en(texto: cadena, desde: entero, sub: cadena) -> booleano:
+    entero m = longitud(sub)
+    entero n = longitud(texto)
+    si desde + m > n:
+        retornar falso
+    entero j = 0
+    mientras j < m:
+        si texto[desde + j] != sub[j]:
+            retornar falso
+        j = j + 1
+    retornar verdadero
+
+# Cuenta las columnas de la fila más ancha (útil para validar).
+funcion csv_ancho_maximo(filas: lista<lista<cadena>>) -> entero:
+    entero max = 0
+    para f en filas:
+        si longitud(f) > max:
+            max = longitud(f)
+    retornar max
+
+# Separa con el separador dado.
+funcion csv_partir(texto: cadena, sep: cadena) -> lista<cadena>:
+    lista<cadena> r = []
+    cadena campo = ""
+    entero n = longitud(texto)
+    entero i = 0
+    entero m = longitud(sep)
+    mientras i < n:
+        entero j = 0
+        booleano coincide = verdadero
+        mientras j < m:
+            si i + j >= n o texto[i + j] != sep[j]:
+                coincide = falso
+                romper
+            j = j + 1
+        si coincide:
+            r = agregar(r, campo)
+            campo = ""
+            i = i + m
+        demas:
+            campo = campo + texto[i]
+            i = i + 1
+    r = agregar(r, campo)
+    retornar r
+
+# --- escritura ---------------------------------------------------------
+
+# Verdadero si el campo necesita comillas en el dialecto RFC 4180.
+funcion csv_necesita_comillas(campo: cadena, sep: cadena) -> booleano:
+    para ch en campo:
+        si ch == "\"" o ch == "\n" o ch == "\r":
+            retornar verdadero
+        si ch == sep:
+            retornar verdadero
+    retornar falso
+
+funcion csv_escapar_campo(campo: cadena) -> cadena:
+    cadena r = ""
+    para ch en campo:
+        si ch == "\"":
+            r = r + "\"\""
+        demas:
+            r = r + ch
+    retornar r
+
+funcion csv_armar_campo(campo: cadena, sep: cadena) -> cadena:
+    si csv_necesita_comillas(campo, sep):
+        retornar "\"" + csv_escapar_campo(campo) + "\""
+    retornar campo
+
+# Arma CSV con separador ',' por defecto (usá csv_armar_con para otro).
+funcion csv_armar(filas: lista<lista<cadena>>) -> cadena:
+    retornar csv_armar_con(filas, ",")
+
+funcion csv_armar_con(filas: lista<lista<cadena>>, sep: cadena) -> cadena:
+    cadena r = ""
+    booleano primera_fila = verdadero
+    para f en filas:
+        si primera_fila:
+            primera_fila = falso
+        demas:
+            r = r + "\n"
+        booleano primero = verdadero
+        para campo en f:
+            si primero:
+                primero = falso
+            demas:
+                r = r + sep
+            r = r + csv_armar_campo(campo, sep)
+    retornar r
+
+# --- atajos sobre una fila --------------------------------------------
+
+# Devuelve la csv_celda (fila, col) o "" si está fuera de rango.
+funcion csv_celda(filas: lista<lista<cadena>>, fila: entero, col: entero) -> cadena:
+    si fila < 0 o fila >= longitud(filas):
+        retornar ""
+    lista<cadena> f = filas[fila]
+    si col < 0 o col >= longitud(f):
+        retornar ""
+    retornar f[col]
+
+# Convierte una fila de texto a enteros ("" -> 0, no numérico -> 0).
+funcion csv_fila_a_enteros(f: lista<cadena>) -> lista<entero>:
+    lista<entero> r = []
+    para c en f:
+        r = agregar(r, csv_entero_o_cero(c))
+    retornar r
+
+funcion csv_entero_o_cero(c: cadena) -> entero:
+    entero r = 0
+    booleano neg = falso
+    entero i = 0
+    entero n = longitud(c)
+    si n == 0:
+        retornar 0
+    si c[0] == "-":
+        neg = verdadero
+        i = 1
+    mientras i < n:
+        si c[i] < "0" o c[i] > "9":
+            retornar 0
+        r = r * 10 + entero(c[i])
+        i = i + 1
+    si neg:
+        retornar -r
+    retornar r
