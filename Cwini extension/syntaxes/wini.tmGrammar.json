@@ -1,0 +1,348 @@
+{
+  "name": "Wini",
+  "scopeName": "source.wini",
+  "fileTypes": ["wn", "wipy", "wini", "cwn"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings_triple" },
+    { "include": "#strings_interpolated" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#keywords_control" },
+    { "include": "#keywords_declaration" },
+    { "include": "#keywords_logical" },
+    { "include": "#types" },
+    { "include": "#exceptions" },
+    { "include": "#constants" },
+    { "include": "#builtins" },
+    { "include": "#import_statement" },
+    { "include": "#externa_definition" },
+    { "include": "#estructura_definition" },
+    { "include": "#function_call" },
+    { "include": "#function_definition" },
+    { "include": "#type_annotation" },
+    { "include": "#imported_modules" },
+    { "include": "#identifiers" },
+    { "include": "#operators" }
+  ],
+
+  "repository": {
+    "comments": {
+      "name": "comment.line.number-sign.wini",
+      "match": "#.*$"
+    },
+
+    "strings_triple": {
+      "patterns": [
+        {
+          "name": "string.quoted.triple.wini",
+          "begin": "\"\"\"",
+          "end": "\"\"\"",
+          "patterns": [
+            { "name": "constant.character.escape.wini", "match": "\\\\." }
+          ]
+        },
+        {
+          "name": "string.quoted.triple.wini",
+          "begin": "'''",
+          "end": "'''",
+          "patterns": [
+            { "name": "constant.character.escape.wini", "match": "\\\\." }
+          ]
+        },
+        {
+          "name": "string.interpolated.wini",
+          "begin": "c\"\"\"",
+          "end": "\"\"\"",
+          "patterns": [
+            {
+              "name": "meta.interpolation.wini",
+              "begin": "\\{",
+              "end": "\\}",
+              "patterns": [{ "include": "#interpolation_inner" }]
+            }
+          ]
+        },
+        {
+          "name": "string.interpolated.wini",
+          "begin": "c'''",
+          "end": "'''",
+          "patterns": [
+            {
+              "name": "meta.interpolation.wini",
+              "begin": "\\{",
+              "end": "\\}",
+              "patterns": [{ "include": "#interpolation_inner" }]
+            }
+          ]
+        }
+      ]
+    },
+
+    "interpolation_inner": {
+      "patterns": [
+        {
+          "name": "support.function.builtin.wini",
+          "match": "\\b(escribir|leer|tipo|rango|claves|valores)\\b"
+        },
+        {
+          "name": "entity.name.function.wini",
+          "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*(?=\\s*\\()"
+        },
+        {
+          "name": "variable.other.interpolated.wini",
+          "match": "[a-zA-Z_][a-zA-Z0-9_]*"
+        },
+        {
+          "name": "keyword.operator.wini",
+          "match": "[+\\-*/%=<>!]|==|!=|<>|<=|>="
+        },
+        {
+          "name": "constant.numeric.float.wini",
+          "match": "\\b\\d+\\.\\d+\\b"
+        },
+        {
+          "name": "constant.numeric.integer.wini",
+          "match": "-?\\b\\d+\\b"
+        },
+        {
+          "name": "string.quoted.double.wini",
+          "match": "\"[^\"]*\""
+        }
+      ]
+    },
+
+    "strings_interpolated": {
+      "patterns": [
+        {
+          "name": "keyword.interpolated.prefix.wini",
+          "match": "c(?=[\"'])",
+          "captures": {
+            "0": { "name": "keyword.interpolated.prefix.wini" }
+          }
+        },
+        {
+          "begin": "(?<=c)([\"'])",
+          "beginCaptures": {
+            "1": { "name": "punctuation.definition.string.begin.wini" }
+          },
+          "end": "\\1",
+          "endCaptures": {
+            "1": { "name": "punctuation.definition.string.end.wini" }
+          },
+          "name": "string.interpolated.wini",
+          "patterns": [
+            {
+              "name": "meta.interpolation.wini",
+              "begin": "\\{",
+              "end": "\\}",
+              "patterns": [{ "include": "#interpolation_inner" }]
+            },
+            { "name": "constant.character.escape.wini", "match": "\\\\." }
+          ]
+        }
+      ]
+    },
+
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.wini",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            { "name": "constant.character.escape.wini", "match": "\\\\." }
+          ]
+        },
+        {
+          "name": "string.quoted.single.wini",
+          "begin": "'",
+          "end": "'",
+          "patterns": [
+            { "name": "constant.character.escape.wini", "match": "\\\\." }
+          ]
+        }
+      ]
+    },
+
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.wini",
+          "match": "-?\\b\\d+\\.\\d+\\b"
+        },
+        {
+          "name": "constant.numeric.integer.wini",
+          "match": "-?\\b\\d+\\b"
+        }
+      ]
+    },
+
+    "keywords_control": {
+      "name": "keyword.control.wini",
+      "match": "\\b(si|sino|demas|mientras|para|romper|continuar|retornar|intentar|capturar|finalmente|lanzar|relanzar|como)\\b"
+    },
+
+    "keywords_declaration": {
+      "name": "keyword.declaration.wini",
+      "match": "\\b(funcion|externa|estructura|importar|tipo)\\b"
+    },
+
+    "keywords_logical": {
+      "name": "keyword.operator.logical.wini",
+      "match": "\\b(y|o|no|en)\\b"
+    },
+
+    "types": {
+      "patterns": [
+        {
+          "name": "storage.type.wini",
+          "match": "\\b(entero|decimal|cadena|booleano|vacio|diccionario|lista|int|float|bool|dict|list|str)\\b"
+        }
+      ]
+    },
+
+    "exceptions": {
+      "name": "support.type.exception.wini",
+      "match": "\\b(SintaxisError|RuntimeError|ErrorTipo|ErrorValor|ErrorIndice|ErrorAtributo|ErrorImportacion|ErrorMatematico|ErrorPersonalizado|TypeError|ValueError|IndexError|AttributeError|ImportError|ZeroDivisionError|EOFError|KeyError)\\b"
+    },
+
+    "constants": {
+      "name": "constant.language.wini",
+      "match": "\\b(verdadero|falso|nulo)\\b"
+    },
+
+    "builtins": {
+      "name": "support.function.builtin.wini",
+      "match": "\\b(escribir|leer|tipo|rango|claves|valores|liberar)\\b"
+    },
+
+    "import_statement": {
+      "patterns": [
+        {
+          "name": "meta.import.wini",
+          "begin": "^\\s*(importar)\\s+",
+          "beginCaptures": {
+            "1": { "name": "keyword.declaration.wini" }
+          },
+          "end": "(?=$|#)",
+          "patterns": [
+            {
+              "name": "string.quoted.double.wini",
+              "match": "\"[^\"]*\""
+            },
+            {
+              "name": "string.quoted.single.wini",
+              "match": "'[^']*'"
+            },
+            {
+              "name": "entity.name.type.module.wini",
+              "match": "[A-Za-z_][\\w]*(?:\\.[A-Za-z_][\\w]*)*"
+            },
+            {
+              "name": "keyword.control.wini",
+              "match": "\\bcomo\\b"
+            }
+          ]
+        }
+      ]
+    },
+
+    "externa_definition": {
+      "patterns": [
+        {
+          "name": "meta.extern.wini",
+          "match": "\\b(externa)\\s+(\"[^\"]*\")?\\s*(como)?\\s*([a-zA-Z_][a-zA-Z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.wini" },
+            "2": { "name": "string.quoted.double.wini" },
+            "3": { "name": "keyword.control.wini" },
+            "4": { "name": "entity.name.function.definition.wini" }
+          }
+        }
+      ]
+    },
+
+    "estructura_definition": {
+      "patterns": [
+        {
+          "name": "meta.struct.wini",
+          "match": "\\b(estructura)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.wini" },
+            "2": { "name": "entity.name.type.class.wini" }
+          }
+        }
+      ]
+    },
+
+    "imported_modules": {
+      "patterns": [
+        {
+          "name": "entity.name.type.module.wini",
+          "match": "(?<=\\bimportar[ \\t]+)[A-Za-z_][\\w]*(?:\\.[A-Za-z_][\\w]*)*"
+        },
+        {
+          "name": "entity.name.type.module.wini",
+          "match": "(?<=\\bimportar[ \\t]+[\"'])[^\"']+(?=[\"'])"
+        },
+        {
+          "name": "entity.name.type.module.wini",
+          "match": "\\b[A-Za-z_][\\w]*(?=\\s*\\.)"
+        }
+      ]
+    },
+
+    "function_call": {
+      "name": "entity.name.function.wini",
+      "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)(?=\\s*\\()",
+      "captures": {
+        "1": { "name": "entity.name.function.wini" }
+      }
+    },
+
+    "function_definition": {
+      "patterns": [
+        {
+          "name": "meta.function.definition.wini",
+          "match": "\\b(funcion)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.wini" },
+            "2": { "name": "entity.name.function.definition.wini" }
+          }
+        }
+      ]
+    },
+
+    "type_annotation": {
+      "patterns": [
+        {
+          "name": "storage.type.function.return.wini",
+          "match": "->"
+        },
+        {
+          "name": "storage.type.generic.wini",
+          "match": "\\b(lista|diccionario)\\s*(<)"
+        },
+        {
+          "name": "storage.type.wini",
+          "match": "(?<=[:\\(,\\->\\s])(entero|decimal|cadena|booleano|vacio)\\b"
+        }
+      ]
+    },
+
+    "identifiers": {
+      "patterns": [
+        {
+          "name": "variable.other.wini",
+          "match": "[a-zA-Z_][a-zA-Z0-9_]*"
+        }
+      ]
+    },
+
+    "operators": {
+      "name": "keyword.operator.wini",
+      "match": "->|[+\\-*/%=<>!]|==|!=|<>|<=|>="
+    }
+  }
+}

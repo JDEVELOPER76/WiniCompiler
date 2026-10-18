@@ -1,95 +1,258 @@
 {
-  "name": "cwin-language",
-  "displayName": "Cwin Language Support (Wini)",
-  "description": "Soporte completo para el lenguaje Cwin (.cwn/.wini): resaltado 100% a color, documentación de las funciones integradas y de los comentarios al hacer hover, detección silenciosa del compilador (where/which cwini), búsqueda de módulos e iconos propios para .cwn y .wini.",
-  "version": "1.0.0",
+  "name": "wini-languagebyjd",
+  "displayName": "Wini Language Support",
+  "description": "Soporte completo para el lenguaje Wini (.wn, .wini y .cwn): autocompletado, diagnósticos, compilación y ejecución",
+  "version": "0.7.1",
   "publisher": "Jdeveloper",
   "icon": "icons/icono.png",
-  "engines": { "vscode": "^1.85.0" },
-  "categories": ["Programming Languages", "Themes"],
-  "keywords": ["cwin", "wini", "cwn", "winic", "cwini", "lenguaje en español"],
-  "license": "MIT",
-  "activationEvents": ["onLanguage:cwin", "onLanguage:wini"],
-  "main": "./src/extension.js",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:wini",
+    "onCommand:wini.recargarStdlib",
+    "onCommand:wini.compilar",
+    "onCommand:wini.ejecutar",
+    "onCommand:wini.comprobar",
+    "onCommand:wini.mostrarIR",
+    "onCommand:wini.configurarWinic"
+  ],
+  "main": "./out/extension.js",
   "contributes": {
     "languages": [
       {
-        "id": "cwin",
-        "aliases": ["Cwin", "cwin"],
-        "extensions": [".cwn", ".wn"],
-        "configuration": "./language-configuration.json",
-        "icon": { "light": "./icons/cwn.svg", "dark": "./icons/cwn.svg" }
-      },
-      {
         "id": "wini",
-        "aliases": ["Wini", "wini"],
-        "extensions": [".wini"],
+        "aliases": [
+          "Wini",
+          "wini"
+        ],
+        "extensions": [
+          ".wn",
+          ".wipy",
+          ".wini",
+          ".cwn"
+        ],
         "configuration": "./language-configuration.json",
-        "icon": { "light": "./icons/wini.svg", "dark": "./icons/wini.svg" }
+        "icon": {
+          "dark": "icons/icono.png",
+          "light": "icons/icono.png"
+        }
       }
     ],
     "grammars": [
       {
-        "language": "cwin",
-        "scopeName": "source.cwin",
-        "path": "./syntaxes/cwin.tmLanguage.json"
-      },
-      {
         "language": "wini",
         "scopeName": "source.wini",
-        "path": "./syntaxes/wini.tmLanguage.json"
+        "path": "./syntaxes/wini.tmGrammar.json"
       }
     ],
-    "themes": [
+    "snippets": [
       {
-        "label": "Cwin Dark",
-        "uiTheme": "vs-dark",
-        "path": "./themes/cwin-dark.json"
+        "language": "wini",
+        "path": "./snippets/wini.code-snippets"
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "wini",
+        "scopes": {
+          "namespace": [
+            "entity.name.type.module.wini",
+            "entity.name.namespace",
+            "support.type"
+          ],
+          "function": [
+            "entity.name.function.wini",
+            "entity.name.function.definition.wini",
+            "support.function"
+          ],
+          "type": [
+            "storage.type.wini",
+            "entity.name.type.class.wini",
+            "support.type.exception.wini"
+          ],
+          "variable": [
+            "variable.other.wini"
+          ],
+          "parameter": [
+            "variable.parameter.wini",
+            "variable.parameter"
+          ]
+        }
       }
     ],
     "commands": [
       {
-        "command": "cwin.buscarCompilador",
-        "title": "Cwin: Buscar compilador (where/which cwini)"
+        "command": "wini.recargarStdlib",
+        "title": "Wini: Recargar stdlib y sugerencias"
       },
       {
-        "command": "cwin.listarModulos",
-        "title": "Cwin: Listar módulos detectados"
+        "command": "wini.comprobar",
+        "title": "Wini: Comprobar sintaxis del archivo actual",
+        "icon": {
+          "light": "./icons/check.svg",
+          "dark": "./icons/check.svg"
+        }
       },
       {
-        "command": "cwin.reescanearModulos",
-        "title": "Cwin: Reescanear módulos"
+        "command": "wini.compilar",
+        "title": "Wini: Compilar archivo actual con winic"
       },
       {
-        "command": "cwin.activarTema",
-        "title": "Cwin: Activar tema Cwin Dark"
+        "command": "wini.ejecutar",
+        "title": "Wini: Compilar y ejecutar archivo actual",
+        "icon": {
+          "light": "./icons/run.svg",
+          "dark": "./icons/run.svg"
+        }
+      },
+      {
+        "command": "wini.mostrarIR",
+        "title": "Wini: Generar LLVM IR (.ll) del archivo actual"
+      },
+      {
+        "command": "wini.configurarWinic",
+        "title": "Wini: Resolver winic no encontrado"
       }
     ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "wini.comprobar",
+          "when": "editorLangId == wini",
+          "group": "navigation@1"
+        },
+        {
+          "command": "wini.ejecutar",
+          "when": "editorLangId == wini",
+          "group": "navigation@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "wini.recargarStdlib",
+          "when": "editorLangId == wini"
+        },
+        {
+          "command": "wini.comprobar",
+          "when": "editorLangId == wini"
+        },
+        {
+          "command": "wini.compilar",
+          "when": "editorLangId == wini"
+        },
+        {
+          "command": "wini.ejecutar",
+          "when": "editorLangId == wini"
+        },
+        {
+          "command": "wini.mostrarIR",
+          "when": "editorLangId == wini"
+        },
+        {
+          "command": "wini.configurarWinic",
+          "when": "editorLangId == wini"
+        }
+      ]
+    },
     "configuration": {
-      "title": "Cwin",
+      "title": "Wini",
       "properties": {
-        "cwin.compilador.ruta": {
+        "wini.winicPath": {
           "type": "string",
           "default": "",
-          "description": "Ruta del ejecutable del compilador (cwini/winic). Si se deja vacío, se detecta en silencio con 'where cwini' (Windows) o 'which cwini' (Linux/macOS), con 'winic' como alternativa."
+          "description": "Ruta al ejecutable winic. Vacío = buscar en el PATH (which/where)."
         },
-        "cwin.modulos.carpetasExtra": {
-          "type": "array",
-          "items": { "type": "string" },
-          "default": [],
-          "description": "Carpetas adicionales donde buscar módulos (.cwn/.wn/.wini), además del propio proyecto y de la carpeta del compilador."
+        "wini.winiPathExtra": {
+          "type": "string",
+          "default": "",
+          "description": "Carpetas extra con módulos Wini, separadas por el delimitador del sistema (: en Linux/macOS, ; en Windows). Se suman a WINI_PATH."
         },
-        "cwin.modulos.buscarJuntoAlCompilador": {
+        "wini.diagnosticsOnSave": {
           "type": "boolean",
           "default": true,
-          "description": "Buscar módulos también en la carpeta del compilador detectado (where/which cwini) y en su subcarpeta 'modulos/'."
+          "description": "Comprobar el archivo con winic al guardar y mostrar errores como subrayados."
         },
-        "cwin.diagnosticos.importaciones": {
+        "wini.diagnosticsOnType": {
+          "type": "boolean",
+          "default": false,
+          "description": "Comprobar mientras se escribe (con pausa de 800 ms). Más costoso; desactivado por defecto."
+        },
+        "wini.maxProblems": {
+          "type": "number",
+          "default": 50,
+          "description": "Máximo de diagnósticos por archivo."
+        },
+        "wini.runAfterBuild": {
           "type": "boolean",
           "default": true,
-          "description": "Marcar con un aviso los 'importar' cuyo módulo no se pueda resolver en ninguna de las rutas conocidas."
+          "description": "El comando Ejecutar corre el binario automáticamente tras compilar."
+        },
+        "wini.sugerirSinImportar": {
+          "type": "string",
+          "enum": [
+            "importados",
+            "stdlib",
+            "siempre"
+          ],
+          "default": "importados",
+          "description": "Qué funciones sugerir sin importar: solo builtins, documento e importados (importados), más la stdlib clásica (stdlib), o todo lo descubierto (siempre)."
+        },
+        "wini.format.indentSize": {
+          "type": "number",
+          "default": 4,
+          "description": "Espacios por nivel de indentación al formatear (Format Document, ⇧Alt+F)."
+        },
+        "wini.format.reindent": {
+          "type": "boolean",
+          "default": true,
+          "description": "Recalcular la indentación según la estructura de bloques (funcion/si/mientras/para/intentar … fin). Las líneas de continuación dentro de paréntesis se respetan tal cual."
+        },
+        "wini.format.trimTrailing": {
+          "type": "boolean",
+          "default": true,
+          "description": "Quitar espacios al final de cada línea al formatear."
+        },
+        "wini.format.tabsToSpaces": {
+          "type": "boolean",
+          "default": true,
+          "description": "Convertir tabuladores a espacios al formatear."
         }
       }
+    },
+    "configurationDefaults": {
+      "[wini]": {
+        "editor.quickSuggestions": {
+          "other": "on",
+          "comments": "off",
+          "strings": "off"
+        },
+        "editor.suggestOnTriggerCharacters": true,
+        "editor.wordBasedSuggestions": "currentDocument",
+        "editor.tabSize": 4,
+        "editor.insertSpaces": true,
+        "editor.trimAutoWhitespace": true
+      }
     }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package",
+    "test:headless": "node scripts/headless/test-re.js",
+    "test:fmt": "node scripts/headless/test-fmt.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^2.30.0",
+    "typescript": "^5.3.0"
+  },
+  "overrides": {
+    "cheerio": "1.0.0-rc.12"
   }
 }

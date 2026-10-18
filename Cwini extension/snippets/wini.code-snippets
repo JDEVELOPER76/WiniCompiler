@@ -1,0 +1,156 @@
+{
+  "Programa principal": {
+    "prefix": "principal",
+    "body": [
+      "funcion principal() -> entero:",
+      "\t${1:escribir(\"hola mundo\")}",
+      "\tretornar 0"
+    ],
+    "description": "Esqueleto de un programa Wini (función principal)"
+  },
+  "Función": {
+    "prefix": "funcion",
+    "body": [
+      "funcion ${1:nombre}(${2:param}: ${3:entero}) -> ${4:entero}:",
+      "\t${5:retornar $2}",
+      "$0"
+    ],
+    "description": "Declara una función con tipo de retorno"
+  },
+  "Función sin retorno": {
+    "prefix": "funcionv",
+    "body": [
+      "funcion ${1:nombre}(${2:param}: ${3:entero}) -> vacio:",
+      "\t$4",
+      "$0"
+    ],
+    "description": "Declara una función que no devuelve nada (-> vacio)"
+  },
+  "Función externa (FFI C)": {
+    "prefix": "externa",
+    "body": [
+      "externa \"${1:simbolo_c}\" como ${2:nombre}(${3:param}: ${4:entero}) -> ${5:entero}:",
+      "$0"
+    ],
+    "description": "Declara una función externa implementada en C"
+  },
+  "Estructura": {
+    "prefix": "estructura",
+    "body": [
+      "estructura ${1:Nombre}:",
+      "\t${2:campo}: ${3:cadena}",
+      "$0"
+    ],
+    "description": "Declara una estructura (los campos se cierran por indentación)"
+  },
+  "Importar módulo": {
+    "prefix": "importar",
+    "body": [
+      "importar \"${1:modulo/archivo}\" como ${2:alias}",
+      "$0"
+    ],
+    "description": "Importa un módulo con alias"
+  },
+  "si": {
+    "prefix": "si",
+    "body": [
+      "si ${1:condicion}:",
+      "\t$0"
+    ],
+    "description": "Bloque condicional si"
+  },
+  "si / sino si / sino": {
+    "prefix": "sinosi",
+    "body": [
+      "si ${1:condicion}:",
+      "\t$2",
+      "sino si ${3:otra_condicion}:",
+      "\t$4",
+      "demas:",
+      "\t$5",
+      "$0"
+    ],
+    "description": "Cadena completa si / sino si / demas"
+  },
+  "mientras": {
+    "prefix": "mientras",
+    "body": [
+      "mientras ${1:condicion}:",
+      "\t$0"
+    ],
+    "description": "Bucle mientras la condición se cumpla"
+  },
+  "para (rango)": {
+    "prefix": "para",
+    "body": [
+      "para ${1:i} en rango(${2:10}):",
+      "\t$0"
+    ],
+    "description": "Bucle sobre rango(...)"
+  },
+  "para (lista)": {
+    "prefix": "paralista",
+    "body": [
+      "para ${1:elemento} en ${2:lista}:",
+      "\t$0"
+    ],
+    "description": "Bucle sobre una lista, diccionario o cadena"
+  },
+  "intentar / capturar": {
+    "prefix": "intentar",
+    "body": [
+      "intentar:",
+      "\t$1",
+      "capturar ${2:ValueError} ${3:e}:",
+      "\t$4",
+      "$0"
+    ],
+    "description": "Bloque intentar / capturar"
+  },
+  "intentar / capturar / finalmente": {
+    "prefix": "intentarfin",
+    "body": [
+      "intentar:",
+      "\t$1",
+      "capturar ${2:ValueError} ${3:e}:",
+      "\t$4",
+      "finalmente:",
+      "\t$5",
+      "$0"
+    ],
+    "description": "Bloque intentar / capturaralmente"
+  },
+  "lanzar excepción": {
+    "prefix": "lanzar",
+    "body": "lanzar ${1:ValueError}(\"${2:mensaje}\")",
+    "description": "Lanza una excepción con mensaje"
+  },
+  "Declarar lista": {
+    "prefix": "listadec",
+    "body": "lista<${1:entero}> ${2:nombre} = []",
+    "description": "Declara una lista tipada vacía"
+  },
+  "Declarar diccionario": {
+    "prefix": "diccionariodec",
+    "body": "diccionario<${1:cadena}, ${2:cadena}> ${3:nombre} = {}",
+    "description": "Declara un diccionario tipado vacío"
+  },
+  "Leer y convertir entero": {
+    "prefix": "leerentero",
+    "body": "entero ${1:n} = entero(leer(\"${2:mensaje}\"))",
+    "description": "Lee una línea y la convierte a entero"
+  },
+  "Escribir con interpolación": {
+    "prefix": "escribirc",
+    "body": "escribir(c\"${1:valor}: {${2:variable}}\")",
+    "description": "escribir con cadena interpolada c\"…\""
+  },
+  "Comentario de sección": {
+    "prefix": "comentario",
+    "body": [
+      "# ─── ${1:título} ───",
+      "$0"
+    ],
+    "description": "Línea de comentario separadora"
+  }
+}
